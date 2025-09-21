@@ -17,7 +17,11 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
       // Fallback: send to Groq AI for extraction
       try {
         const aiPayload = {
-          prompt: `Extract all assignments and courses with due dates from this syllabus text:\n${req.file.buffer.toString('utf-8')}`
+          model: 'mixtral-8x7b-32768',
+          messages: [
+            { role: 'system', content: 'You are an expert academic assistant.' },
+            { role: 'user', content: `Extract all assignments and courses with due dates from this syllabus text:\n${req.file.buffer.toString('utf-8')}` }
+          ]
         };
         const response = await fetch(process.env.GROQ_API_URL, {
           method: 'POST',
@@ -28,7 +32,7 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
           body: JSON.stringify(aiPayload)
         });
         const aiResult = await response.json();
-        parsed = aiResult.choices?.[0]?.text || aiResult.plan || aiResult.response || null;
+        parsed = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
       } catch (aiErr) {
         return res.status(500).json({ error: 'Failed to parse syllabus with both rule-based and AI methods.' });
       }
@@ -51,8 +55,10 @@ app.get('/api/plan', async (req, res) => {
     const activities = await Activity.find({ supabaseId: userId });
 
     // Compose a detailed prompt for Groq
-    const prompt = `You are an expert academic planner. Given the following user data, generate a personalized, actionable daily study/work plan.\n\nUser: ${JSON.stringify(user)}\n\nCourses: ${JSON.stringify(courses)}\n\nAssignments: ${JSON.stringify(assignments)}\n\nRecent Activities: ${JSON.stringify(activities)}\n\nThe plan should be clear, motivating, and broken into steps. Include time blocks, priorities, and tips. Format as a numbered list.`;
-
+    const messages = [
+      { role: 'system', content: 'You are an expert academic planner.' },
+      { role: 'user', content: `Given the following user data, generate a personalized, actionable daily study/work plan.\n\nUser: ${JSON.stringify(user)}\n\nCourses: ${JSON.stringify(courses)}\n\nAssignments: ${JSON.stringify(assignments)}\n\nRecent Activities: ${JSON.stringify(activities)}\n\nThe plan should be clear, motivating, and broken into steps. Include time blocks, priorities, and tips. Format as a numbered list.` }
+    ];
     let plan = null;
     try {
       const response = await fetch(process.env.GROQ_API_URL, {
@@ -61,10 +67,10 @@ app.get('/api/plan', async (req, res) => {
           'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ model: 'mixtral-8x7b-32768', messages })
       });
       const aiResult = await response.json();
-      plan = aiResult.choices?.[0]?.text || aiResult.plan || aiResult.response || null;
+      plan = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
     } catch (err) {
       console.log('Groq AI planner error:', err);
     }
@@ -121,13 +127,11 @@ app.post('/api/recommendations', async (req, res) => {
     console.log('activities:', activities);
     console.log('courses:', courses);
 
-    // Prepare payload for Groq
-    const payload = {
-      user,
-      activities,
-      courses
-    };
-
+    // Prepare payload for Groq chat completion
+    const recMessages = [
+      { role: 'system', content: 'You are an expert academic assistant.' },
+      { role: 'user', content: `Given the following user, activities, and courses, generate actionable, personalized study recommendations.\n\nUser: ${JSON.stringify(user)}\n\nActivities: ${JSON.stringify(activities)}\n\nCourses: ${JSON.stringify(courses)}\n\nFormat as a list.` }
+    ];
     let recommendations = null;
     try {
       // Call Groq API
@@ -137,10 +141,12 @@ app.post('/api/recommendations', async (req, res) => {
           'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ model: 'mixtral-8x7b-32768', messages: recMessages })
       });
-      recommendations = await response.json();
-      console.log('AI response:', recommendations);
+  const aiResult = await response.json();
+  console.log('Full Groq API response:', JSON.stringify(aiResult, null, 2));
+  recommendations = { recommendations: aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null };
+  console.log('AI response:', recommendations);
     } catch (err) {
       console.log('Groq API error:', err);
     }
