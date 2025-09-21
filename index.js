@@ -1,10 +1,11 @@
-const express = require('express');
+import express from 'express';
 const app = express();
-const multer = require('multer');
-const { parseSyllabus } = require('./syllabusParser');
+import multer from 'multer';
+import { parseSyllabus } from './syllabusParser.js';
 const upload = multer();
-const axios = require('axios');
-const base64 = require('base-64');
+import axios from 'axios';
+import base64 from 'base-64';
+import fetch from 'node-fetch';
 // Syllabus import endpoint
 app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
   try {
@@ -83,10 +84,11 @@ app.get('/api/plan', async (req, res) => {
   }
 });
 // Basic Express server scaffold for monorepo backend
-require('dotenv').config();
-const cors = require('cors');
-const mongoose = require('mongoose');
-const fetch = require('node-fetch'); // For Groq API integration
+
+import dotenv from 'dotenv';
+dotenv.config();
+import cors from 'cors';
+import mongoose from 'mongoose';
 
 app.use(cors());
 app.use(express.json());
@@ -98,11 +100,11 @@ mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true 
   .catch((err) => console.error('MongoDB connection error:', err));
 
 // Import models
-const User = require('./models/user');
-const Assignment = require('./models/assignment');
-const Note = require('./models/note');
-const Course = require('./models/course');
-const Activity = require('./models/activity');
+import User from './models/user.js';
+import Assignment from './models/assignment.js';
+import Note from './models/note.js';
+import Course from './models/course.js';
+import Activity from './models/activity.js';
 // Groq AI Recommendations endpoint
 app.post('/api/recommendations', async (req, res) => {
   try {

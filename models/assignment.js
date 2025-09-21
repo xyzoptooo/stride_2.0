@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+import mongoose from 'mongoose';
 
 const AssignmentSchema = new mongoose.Schema({
   supabaseId: { type: String, required: true }, // Reference to user
@@ -12,4 +12,4 @@ const AssignmentSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-module.exports = mongoose.model('Assignment', AssignmentSchema);
+export default mongoose.model('Assignment', AssignmentSchema);

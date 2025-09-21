@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+import mongoose from 'mongoose';
 
 const ActivitySchema = new mongoose.Schema({
   supabaseId: { type: String, required: true },
@@ -10,4 +10,4 @@ const ActivitySchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-module.exports = mongoose.model('Activity', ActivitySchema);
+export default mongoose.model('Activity', ActivitySchema);

@@ -1,5 +1,5 @@
-const pdfParse = require('pdf-parse');
-const mammoth = require('mammoth');
+import pdfParse from 'pdf-parse';
+import mammoth from 'mammoth';
 
 // Rule-based extraction for assignments/courses from text
 function extractAssignmentsAndCourses(text) {
@@ -40,4 +40,4 @@ async function parseSyllabus(file) {
   return extractAssignmentsAndCourses(text);
 }
 
-module.exports = { parseSyllabus };
+export { parseSyllabus };

@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+import mongoose from 'mongoose';
 
 const UserSchema = new mongoose.Schema({
   supabaseId: { type: String, required: true, unique: true },
@@ -7,4 +7,4 @@ const UserSchema = new mongoose.Schema({
   // Add more fields as needed
 });
 
-module.exports = mongoose.model('User', UserSchema);
+export default mongoose.model('User', UserSchema);
