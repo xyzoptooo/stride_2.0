@@ -1,5 +1,51 @@
 import express from 'express';
 const app = express();
+
+// AI Mindmap endpoint
+app.post('/api/mindmap', async (req, res) => {
+  try {
+    const { supabaseId } = req.body;
+    if (!supabaseId) return res.status(400).json({ error: 'Missing supabaseId' });
+    // Fetch user courses
+    const courses = await Course.find({ supabaseId });
+    // Prepare prompt for Groq
+    const courseNames = courses.map(c => c.name).join(', ');
+    const messages = [
+      { role: 'system', content: 'You are an expert at creating academic mindmaps.' },
+      { role: 'user', content: `Given these courses: ${courseNames}, generate a mindmap as a flat list of 5-10 key topics or concepts the student should focus on. Only return the list, no explanations.` }
+    ];
+    let topics = [];
+    try {
+      const response = await fetch(process.env.GROQ_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages })
+      });
+      const aiResult = await response.json();
+      let content = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || '';
+      // Split into array, remove bullets/numbers/asterisks
+      topics = content.split(/\n|\r/)
+        .map(line => line.replace(/^\s*(\d+\.|\*|\u2022)\s*/, ''))
+        .map(line => line.replace(/^[\u2022\*]+/g, ''))
+        .map(line => line.trim())
+        .filter(Boolean);
+    } catch (err) {
+      console.log('Groq AI mindmap error:', err);
+    }
+    // Fallback: use course names if AI fails
+    if (!topics.length && courses.length > 0) {
+      topics = courses.map(c => c.name);
+    }
+    res.json({ topics });
+  } catch (err) {
+    console.log('MINDMAP AI ERROR:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+// ...existing code...
 import multer from 'multer';
 import { parseSyllabus } from './syllabusParser.js';
 const upload = multer();
@@ -17,7 +63,7 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
       // Fallback: send to Groq AI for extraction
       try {
         const aiPayload = {
-          model: 'mixtral-8x7b-32768',
+          model: 'llama-3.3-70b-versatile',
           messages: [
             { role: 'system', content: 'You are an expert academic assistant.' },
             { role: 'user', content: `Extract all assignments and courses with due dates from this syllabus text:\n${req.file.buffer.toString('utf-8')}` }
@@ -67,7 +113,7 @@ app.get('/api/plan', async (req, res) => {
           'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ model: 'mixtral-8x7b-32768', messages })
+  body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages })
       });
       const aiResult = await response.json();
       plan = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
@@ -129,8 +175,8 @@ app.post('/api/recommendations', async (req, res) => {
 
     // Prepare payload for Groq chat completion
     const recMessages = [
-      { role: 'system', content: 'You are an expert academic assistant.' },
-      { role: 'user', content: `Given the following user, activities, and courses, generate actionable, personalized study recommendations.\n\nUser: ${JSON.stringify(user)}\n\nActivities: ${JSON.stringify(activities)}\n\nCourses: ${JSON.stringify(courses)}\n\nFormat as a list.` }
+  { role: 'system', content: 'You are an expert academic assistant.' },
+  { role: 'user', content: `Given the following activities and courses, generate actionable, personalized study recommendations. Use "you" and "your" language (e.g., "since you have", "your courses"), not "the user".\n\nActivities: ${JSON.stringify(activities)}\n\nCourses: ${JSON.stringify(courses)}\n\nFormat as a list.` }
     ];
     let recommendations = null;
     try {
@@ -141,12 +187,25 @@ app.post('/api/recommendations', async (req, res) => {
           'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ model: 'mixtral-8x7b-32768', messages: recMessages })
+        body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: recMessages })
       });
-  const aiResult = await response.json();
-  console.log('Full Groq API response:', JSON.stringify(aiResult, null, 2));
-  recommendations = { recommendations: aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null };
-  console.log('AI response:', recommendations);
+      const aiResult = await response.json();
+      let content = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
+      // Extract only the main recommendations as an array, add motivational emoji, and ensure motivational tone
+      let recArray = [];
+      if (content) {
+        // Get all lines starting with a bullet or number, remove emoji and asterisks, trim, and bold words in frontend
+        recArray = content.split(/\n|\r/)
+          .filter(line => /^\s*(\d+\.|\*|\u2022)/.test(line))
+          .map(line => line.replace(/^\s*(\d+\.|\*|\u2022)\s*/, ''))
+          .map(line => line.replace(/^[\u2022\*]+/g, '')) // remove leading bullets/asterisks
+          .map(line => line.replace(/(^|\s)[\u{1F300}-\u{1FAFF}]+/gu, '')) // remove emoji
+          .map(text => text.trim())
+          .filter(Boolean)
+          .slice(0, 3);
+      }
+      recommendations = { recommendations: recArray };
+      console.log('AI response:', recommendations);
     } catch (err) {
       console.log('Groq API error:', err);
     }
@@ -274,6 +333,17 @@ app.post('/api/activities', async (req, res) => {
 
 app.get('/api/activities/:supabaseId', async (req, res) => {
   try {
+    const activities = await Activity.find({ supabaseId: req.params.supabaseId });
+    res.json(activities);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Study data endpoint for charts
+app.get('/api/study-data/:supabaseId', async (req, res) => {
+  try {
+    // You can customize this to aggregate or format data as needed for your chart
     const activities = await Activity.find({ supabaseId: req.params.supabaseId });
     res.json(activities);
   } catch (err) {
