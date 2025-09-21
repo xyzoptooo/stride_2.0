@@ -142,7 +142,17 @@ dotenv.config();
 import cors from 'cors';
 import mongoose from 'mongoose';
 
-app.use(cors());
+// CORS: Allow requests from frontend origins
+const allowedOrigins = [
+  "http://localhost:8080",
+  "http://localhost:5173",
+  "https://stride-2-0.onrender.com",
+  // Add your production frontend URL if different
+];
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+}));
 app.use(express.json());
 
 // MongoDB connection
