@@ -191,6 +191,7 @@ app.post('/api/recommendations', async (req, res) => {
         body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: recMessages })
       });
       const aiResult = await response.json();
+      console.log('Groq AI raw response:', JSON.stringify(aiResult));
       let content = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
       let recArray = [];
       if (content) {
