@@ -7,6 +7,7 @@ const ActivitySchema = new mongoose.Schema({
   date: Date,
   hours: Number,
   details: String,
+  reminder: Date, // When to send reminder
   createdAt: { type: Date, default: Date.now }
 });
 
