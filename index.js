@@ -17,6 +17,7 @@ const allowedOrigins = [
   "http://localhost:8080",
   "http://localhost:5173",
   "https://stride-2-0.onrender.com",
+  "https://www.semesterstride.app",
   // Add your production frontend URL if different
 ];
 app.use((req, res, next) => {
