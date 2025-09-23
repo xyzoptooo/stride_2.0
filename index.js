@@ -380,6 +380,15 @@ app.post('/api/mpesa/stkpush', async (req, res) => {
     if (!phone || !amount) {
       return res.status(400).json({ error: 'Phone and amount are required.' });
     }
+    // Normalize phone number: 07xxxxxxxx or 01xxxxxxxx to 2547xxxxxxxx or 2541xxxxxxxx
+    let normalizedPhone = phone.trim();
+    if (/^0(7|1)\d{8}$/.test(normalizedPhone)) {
+      normalizedPhone = '254' + normalizedPhone.slice(1);
+    }
+    // Accept already normalized numbers
+    if (!/^254(7|1)\d{8}$/.test(normalizedPhone)) {
+      return res.status(400).json({ error: 'Invalid phone number format.' });
+    }
     const accessToken = await getMpesaAccessToken();
     const timestamp = getTimestamp();
     const businessShortCode = '5468788';
@@ -393,22 +402,22 @@ app.post('/api/mpesa/stkpush', async (req, res) => {
       Timestamp: timestamp,
       TransactionType: 'CustomerBuyGoodsOnline',
       Amount: amount,
-      PartyA: phone,
+      PartyA: normalizedPhone,
       PartyB: partyB,
-      PhoneNumber: phone,
+      PhoneNumber: normalizedPhone,
       CallBackURL: process.env.MPESA_CALLBACK_URL,
       AccountReference: accountReference || 'SemesterStride',
       TransactionDesc: transactionDesc || 'Premium Payment'
     };
     console.log('--- Mpesa STK Push Attempt ---');
-    console.log('Phone:', phone);
+    console.log('Phone:', normalizedPhone);
     console.log('Payload:', payload);
     try {
       const stkRes = await axios.post(stkUrl, payload, {
         headers: { Authorization: `Bearer ${accessToken}` }
       });
       console.log('Mpesa API Response:', stkRes.data);
-      paymentStatusStore[`${phone}_${plan}`] = { status: 'pending', timestamp: Date.now() };
+      paymentStatusStore[`${normalizedPhone}_${plan}`] = { status: 'pending', timestamp: Date.now() };
       res.json({ success: true, data: stkRes.data });
     } catch (err) {
       console.error('Mpesa STK Push error:', err.response?.data || err.message);
