@@ -182,7 +182,9 @@ app.post('/api/recommendations', async (req, res) => {
     ];
     let recommendations = null;
     try {
-      const response = await fetch(process.env.GROQ_API_URL, {
+      // Ensure we use the correct endpoint from .env (no extra path)
+      const groqUrl = process.env.GROQ_API_URL;
+      const response = await fetch(groqUrl, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
