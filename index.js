@@ -10,7 +10,6 @@ import base64 from 'base-64';
 import fetch from 'node-fetch';
 
 // --- Hybrid Recommendation Engine ---
-import { Matrix } from 'ml-matrix';
 
 // --- Production Recommendation Algorithm ---
 class RecommendationEngine {
