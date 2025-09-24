@@ -310,6 +310,10 @@ import Course from './models/course.js';
 import Activity from './models/activity.js';
 
 // --- AI Mindmap endpoint ---
+// --- Home route ---
+app.get('/', (req, res) => {
+  res.send('Backend API is running');
+});
 app.post('/api/mindmap', async (req, res) => {
   try {
     const { supabaseId } = req.body;
