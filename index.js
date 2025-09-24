@@ -305,7 +305,6 @@ mongoose.connect(MONGODB_URI, { useNewUrlParser: true })
 // --- Import models ---
 import User from './models/user.js';
 import Assignment from './models/assignment.js';
-import Note from './models/note.js';
 import Course from './models/course.js';
 import Activity from './models/activity.js';
 
@@ -509,6 +508,17 @@ app.post('/api/recommendations', async (req, res) => {
 });
 
 // --- Activity routes ---
+// --- Course creation endpoint ---
+app.post('/api/courses', async (req, res) => {
+  try {
+    const course = new Course(req.body);
+    await course.save();
+    res.status(201).json(course);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.post('/api/activities', async (req, res) => {
   try {
     const activity = new Activity(req.body);
