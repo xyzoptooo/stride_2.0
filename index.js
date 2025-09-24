@@ -508,6 +508,58 @@ app.post('/api/recommendations', async (req, res) => {
 });
 
 // --- Activity routes ---
+// --- Notes CRUD endpoints ---
+// Create a note
+app.post('/api/notes', async (req, res) => {
+  try {
+    const note = new Note(req.body);
+    await note.save();
+    res.status(201).json(note);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Get all notes for a user
+app.get('/api/notes/:supabaseId', async (req, res) => {
+  try {
+    const notes = await Note.find({ supabaseId: req.params.supabaseId });
+    res.json(notes);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Update a note
+app.put('/api/notes/:id', async (req, res) => {
+  try {
+    const note = await Note.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!note) return res.status(404).json({ error: 'Note not found' });
+    res.json(note);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Delete a note
+app.delete('/api/notes/:id', async (req, res) => {
+  try {
+    const result = await Note.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Note not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+// --- Get courses for a user ---
+app.get('/api/courses/:supabaseId', async (req, res) => {
+  try {
+    const courses = await Course.find({ supabaseId: req.params.supabaseId });
+    res.json(courses);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 // --- Course creation endpoint ---
 app.post('/api/courses', async (req, res) => {
   try {
