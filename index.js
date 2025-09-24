@@ -509,6 +509,49 @@ app.post('/api/recommendations', async (req, res) => {
 
 // --- Activity routes ---
 // --- Notes CRUD endpoints ---
+// --- Assignments CRUD endpoints ---
+// Create an assignment
+app.post('/api/assignments', async (req, res) => {
+  try {
+    const assignment = new Assignment(req.body);
+    await assignment.save();
+    res.status(201).json(assignment);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Get all assignments for a user
+app.get('/api/assignments/:supabaseId', async (req, res) => {
+  try {
+    const assignments = await Assignment.find({ supabaseId: req.params.supabaseId });
+    res.json(assignments);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Update an assignment
+app.put('/api/assignments/:id', async (req, res) => {
+  try {
+    const assignment = await Assignment.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
+    res.json(assignment);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Delete an assignment
+app.delete('/api/assignments/:id', async (req, res) => {
+  try {
+    const result = await Assignment.findByIdAndDelete(req.params.id);
+    if (!result) return res.status(404).json({ error: 'Assignment not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
 // Create a note
 app.post('/api/notes', async (req, res) => {
   try {
