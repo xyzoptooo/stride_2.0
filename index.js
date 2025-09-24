@@ -193,18 +193,44 @@ app.post('/api/recommendations', async (req, res) => {
         body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: recMessages })
       });
       const aiResult = await response.json();
-      console.log('Groq AI raw response:', JSON.stringify(aiResult));
-      let content = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
+      console.log('================ AI RESPONSE START ================');
+      console.log(JSON.stringify(aiResult, null, 2));
+      console.log('================ AI RESPONSE END ==================');
       let recArray = [];
-      if (content) {
-        recArray = content.split(/\n|\r/)
-          .filter(line => /^\s*(\d+\.|\*|\u2022)/.test(line))
-          .map(line => line.replace(/^\s*(\d+\.|\*|\u2022)\s*/, ''))
-          .map(line => line.replace(/^[\u2022\*]+/g, ''))
-          .map(line => line.replace(/(^|\s)[\u{1F300}-\u{1FAFF}]+/gu, ''))
-          .map(text => text.trim())
-          .filter(Boolean)
-          .slice(0, 3);
+      // Try to extract recommendations from various possible fields
+      if (Array.isArray(aiResult.recommendations)) {
+        recArray = aiResult.recommendations.filter(Boolean);
+      } else if (typeof aiResult.recommendations === 'string') {
+        recArray = aiResult.recommendations.split(/\n|\r/).filter(Boolean);
+      } else if (aiResult.choices?.[0]?.message?.content) {
+        let content = aiResult.choices[0].message.content;
+        // Try to parse as JSON array if possible
+        try {
+          const parsed = JSON.parse(content);
+          if (Array.isArray(parsed)) {
+            recArray = parsed.filter(Boolean);
+          } else if (typeof parsed === 'object' && parsed !== null && parsed.recommendations) {
+            recArray = Array.isArray(parsed.recommendations)
+              ? parsed.recommendations.filter(Boolean)
+              : [parsed.recommendations].filter(Boolean);
+          } else if (typeof parsed === 'string') {
+            recArray = parsed.split(/\n|\r/).filter(Boolean);
+          }
+        } catch {
+          // Fallback: split lines and filter numbered/bulleted items
+          recArray = content.split(/\n|\r/)
+            .filter(line => /^\s*(\d+\.|\*|\u2022)/.test(line) || line.trim().length > 0)
+            .map(line => line.replace(/^\s*(\d+\.|\*|\u2022)\s*/, ''))
+            .map(line => line.replace(/^[\u2022\*]+/g, ''))
+            .map(line => line.replace(/(^|\s)[\u{1F300}-\u{1FAFF}]+/gu, ''))
+            .map(text => text.trim())
+            .filter(Boolean)
+            .slice(0, 5);
+        }
+      } else if (aiResult.plan) {
+        recArray = [aiResult.plan];
+      } else if (aiResult.response) {
+        recArray = [aiResult.response];
       }
       recommendations = { recommendations: recArray };
     } catch (err) {
