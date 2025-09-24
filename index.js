@@ -9,6 +9,268 @@ import axios from 'axios';
 import base64 from 'base-64';
 import fetch from 'node-fetch';
 
+// --- Hybrid Recommendation Engine ---
+import { Matrix } from 'ml-matrix';
+
+// --- Production Recommendation Algorithm ---
+class RecommendationEngine {
+  constructor() {
+    this.userSimilarityCache = new Map();
+    this.cacheTimeout = 30 * 60 * 1000; // 30 minutes
+  }
+
+  // Calculate user similarity based on course enrollment and activity patterns
+  calculateUserSimilarity(currentUserActivities, allUsersActivities) {
+    const cacheKey = JSON.stringify(currentUserActivities);
+    if (this.userSimilarityCache.has(cacheKey)) {
+      const cached = this.userSimilarityCache.get(cacheKey);
+      if (Date.now() - cached.timestamp < this.cacheTimeout) {
+        return cached.similarities;
+      }
+    }
+
+    const similarities = [];
+    const currentUserVector = this.buildUserVector(currentUserActivities);
+
+    allUsersActivities.forEach(otherUser => {
+      if (otherUser.supabaseId === currentUserActivities.supabaseId) return;
+
+      const otherUserVector = this.buildUserVector(otherUser);
+      const similarity = this.cosineSimilarity(currentUserVector, otherUserVector);
+      
+      if (similarity > 0.3) { // Only include meaningful similarities
+        similarities.push({
+          userId: otherUser.supabaseId,
+          similarity: similarity,
+          activities: otherUser.activities
+        });
+      }
+    });
+
+    // Sort by similarity (highest first)
+    similarities.sort((a, b) => b.similarity - a.similarity);
+    
+    this.userSimilarityCache.set(cacheKey, {
+      similarities: similarities.slice(0, 10), // Top 10 similar users
+      timestamp: Date.now()
+    });
+
+    return similarities.slice(0, 10);
+  }
+
+  buildUserVector(userData) {
+    // Create feature vector: [study_hours, assignment_completion, course_count, recent_activity]
+    const totalStudyHours = userData.activities
+      .filter(a => a.type === 'study')
+      .reduce((sum, a) => sum + (a.duration || 1), 0);
+
+    const completedAssignments = userData.assignments
+      .filter(a => a.status === 'completed').length;
+
+    const activeCourses = userData.courses.length;
+    
+    const recentActivity = userData.activities
+      .filter(a => new Date(a.date) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)).length;
+
+    return [totalStudyHours, completedAssignments, activeCourses, recentActivity];
+  }
+
+  cosineSimilarity(vecA, vecB) {
+    if (vecA.length !== vecB.length) return 0;
+    
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+
+    for (let i = 0; i < vecA.length; i++) {
+      dotProduct += vecA[i] * vecB[i];
+      normA += vecA[i] * vecA[i];
+      normB += vecB[i] * vecB[i];
+    }
+
+    if (normA === 0 || normB === 0) return 0;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  // Collaborative filtering: find what similar users are doing
+  async collaborativeRecommendations(currentUserId, similarUsers, currentUserCourses) {
+    const recommendations = new Set();
+    const currentCourseNames = new Set(currentUserCourses.map(c => c.name));
+
+    similarUsers.forEach(similarUser => {
+      // Find study patterns from similar users
+      similarUser.activities.forEach(activity => {
+        if (activity.type === 'study' && 
+            !currentCourseNames.has(activity.courseName) &&
+            activity.duration > 30) { // Meaningful study sessions
+          recommendations.add(`Similar students study ${activity.courseName} for ${activity.duration} minutes`);
+        }
+      });
+
+      // Find assignment patterns
+      if (similarUser.assignments) {
+        similarUser.assignments.forEach(assignment => {
+          if (assignment.status === 'completed' && 
+              !currentCourseNames.has(assignment.courseName)) {
+            recommendations.add(`Try assignment: ${assignment.title} from ${assignment.courseName}`);
+          }
+        });
+      }
+    });
+
+    return Array.from(recommendations).slice(0, 5);
+  }
+
+  // Content-based filtering: based on user's own patterns
+  contentBasedRecommendations(userData) {
+    const recommendations = [];
+    const now = new Date();
+
+    // 1. Time-based recommendations
+    const recentActivities = userData.activities
+      .filter(a => new Date(a.date) > new Date(now - 2 * 24 * 60 * 60 * 1000))
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    // 2. Study pattern analysis
+    const studyByHour = {};
+    userData.activities.forEach(activity => {
+      if (activity.type === 'study') {
+        const hour = new Date(activity.date).getHours();
+        studyByHour[hour] = (studyByHour[hour] || 0) + 1;
+      }
+    });
+
+    // Find optimal study time
+    const bestHour = Object.keys(studyByHour)
+      .reduce((a, b) => studyByHour[a] > studyByHour[b] ? a : b, '14'); // Default to 2 PM
+
+    recommendations.push(`Your most productive time is ${bestHour}:00 - consider scheduling study sessions then`);
+
+    // 3. Assignment prioritization
+    const upcomingAssignments = userData.assignments
+      .filter(a => a.status === 'pending' && new Date(a.dueDate) > now)
+      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+    if (upcomingAssignments.length > 0) {
+      const urgentAssignment = upcomingAssignments[0];
+      const daysUntilDue = Math.ceil((new Date(urgentAssignment.dueDate) - now) / (1000 * 60 * 60 * 24));
+      
+      recommendations.push(`Priority: ${urgentAssignment.title} due in ${daysUntilDue} days`);
+    }
+
+    // 4. Course balance analysis
+    const courseStudyTime = {};
+    userData.activities.forEach(activity => {
+      if (activity.type === 'study' && activity.courseName) {
+        courseStudyTime[activity.courseName] = (courseStudyTime[activity.courseName] || 0) + (activity.duration || 1);
+      }
+    });
+
+    // Find least studied course
+    const courses = Object.keys(courseStudyTime);
+    if (courses.length > 1) {
+      const leastStudied = courses.reduce((a, b) => 
+        courseStudyTime[a] < courseStudyTime[b] ? a : b
+      );
+      recommendations.push(`Consider spending more time on ${leastStudied}`);
+    }
+
+    return recommendations.slice(0, 5);
+  }
+
+  // Main recommendation generator
+  async generateRecommendations(supabaseId) {
+    try {
+      // Get all user data in parallel
+      const [currentUser, allUsers, courses, assignments, activities] = await Promise.all([
+        User.findOne({ supabaseId }),
+        User.find({}),
+        Course.find({ supabaseId }),
+        Assignment.find({ supabaseId }),
+        Activity.find({ supabaseId })
+      ]);
+
+      if (!currentUser) throw new Error('User not found');
+
+      const currentUserData = {
+        supabaseId,
+        courses,
+        assignments,
+        activities,
+        user: currentUser
+      };
+
+      // Get all users' data for collaborative filtering
+      const allUsersData = await Promise.all(
+        allUsers.map(async user => ({
+          supabaseId: user.supabaseId,
+          courses: await Course.find({ supabaseId: user.supabaseId }),
+          assignments: await Assignment.find({ supabaseId: user.supabaseId }),
+          activities: await Activity.find({ supabaseId: user.supabaseId })
+        }))
+      );
+
+      // 1. Content-based recommendations (always works)
+      const contentRecs = this.contentBasedRecommendations(currentUserData);
+
+      // 2. Collaborative filtering recommendations
+      let collaborativeRecs = [];
+      try {
+        const similarUsers = this.calculateUserSimilarity(currentUserData, allUsersData);
+        collaborativeRecs = await this.collaborativeRecommendations(supabaseId, similarUsers, courses);
+      } catch (error) {
+        console.log('Collaborative filtering failed, using content-based only:', error.message);
+      }
+
+      // Combine and deduplicate recommendations
+      const allRecs = [...new Set([...contentRecs, ...collaborativeRecs])];
+      
+      return {
+        recommendations: allRecs.slice(0, 5),
+        type: collaborativeRecs.length > 0 ? 'hybrid' : 'content-based',
+        generatedAt: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('Recommendation engine error:', error);
+      // Fallback to simple rule-based recommendations
+      return this.getFallbackRecommendations(supabaseId);
+    }
+  }
+
+  // Simple fallback when everything else fails
+  async getFallbackRecommendations(supabaseId) {
+    const courses = await Course.find({ supabaseId });
+    const assignments = await Assignment.find({ supabaseId });
+    
+    const recommendations = [];
+    
+    if (courses.length > 0) {
+      recommendations.push(`Review your notes for ${courses[0].name}`);
+      recommendations.push('Plan your study sessions for the week ahead');
+    }
+    
+    if (assignments.length > 0) {
+      const pending = assignments.filter(a => a.status === 'pending');
+      if (pending.length > 0) {
+        recommendations.push(`Work on: ${pending[0].title}`);
+      }
+    }
+    
+    recommendations.push('Take regular breaks during study sessions');
+    recommendations.push('Stay hydrated and maintain a consistent sleep schedule');
+
+    return {
+      recommendations: recommendations.slice(0, 5),
+      type: 'fallback',
+      generatedAt: new Date().toISOString()
+    };
+  }
+}
+
+// Initialize the engine
+const recommendationEngine = new RecommendationEngine();
+
 dotenv.config();
 const app = express();
 
@@ -37,7 +299,7 @@ app.use(express.json());
 
 // --- MongoDB connection ---
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/semesterstride';
-mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(MONGODB_URI, { useNewUrlParser: true })
   .then(() => console.log('MongoDB connected'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
@@ -168,179 +430,78 @@ app.get('/api/plan', async (req, res) => {
   }
 });
 // --- Groq AI Recommendations endpoint ---
+
+// --- Home route ---
+// --- Production Ready Recommendations endpoint ---
 app.post('/api/recommendations', async (req, res) => {
   try {
     const { supabaseId } = req.body;
-    const user = await User.findOne({ supabaseId });
-    const activities = await Activity.find({ supabaseId });
-    const courses = await Course.find({ supabaseId });
+    if (!supabaseId) {
+      return res.status(400).json({ error: 'Missing supabaseId' });
+    }
 
-    // Prepare payload for Groq chat completion
-    const recMessages = [
-      { role: 'system', content: 'You are an expert academic assistant.' },
-      { role: 'user', content: `Given the following activities and courses, generate actionable, personalized study recommendations. Use "you" and "your" language (e.g., "since you have", "your courses"), not "the user".\n\nActivities: ${JSON.stringify(activities)}\n\nCourses: ${JSON.stringify(courses)}\n\nFormat as a list.` }
-    ];
-    let recommendations = null;
+    let recommendations;
+    
+    // Try AI first, then fallback to algorithmic approach
     try {
-      // Ensure we use the correct endpoint from .env (no extra path)
-      const groqUrl = process.env.GROQ_API_URL;
-      const response = await fetch(groqUrl, {
+      // Your existing AI code first
+      const user = await User.findOne({ supabaseId });
+      const activities = await Activity.find({ supabaseId });
+      const courses = await Course.find({ supabaseId });
+
+      const recMessages = [
+        { role: 'system', content: 'You are an expert academic assistant. Generate 3-5 personalized study recommendations based on the user data. Be specific and actionable.' },
+        { role: 'user', content: `User courses: ${courses.map(c => c.name).join(', ')}. Recent activities: ${activities.slice(0, 10).map(a => `${a.type} for ${a.courseName}`).join(', ')}. Generate 3-5 specific study recommendations.` }
+      ];
+      
+      const response = await fetch(process.env.GROQ_API_URL, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: recMessages })
+        body: JSON.stringify({ 
+          model: 'llama-3.3-70b-versatile', 
+          messages: recMessages,
+          max_tokens: 500
+        })
       });
+      
       const aiResult = await response.json();
-      console.log('================ AI RESPONSE START ================');
-      console.log(JSON.stringify(aiResult, null, 2));
-      console.log('================ AI RESPONSE END ==================');
-      let recArray = [];
-      // Try to extract recommendations from various possible fields
-      if (Array.isArray(aiResult.recommendations)) {
-        recArray = aiResult.recommendations.filter(Boolean);
-      } else if (typeof aiResult.recommendations === 'string') {
-        recArray = aiResult.recommendations.split(/\n|\r/).filter(Boolean);
-      } else if (aiResult.choices?.[0]?.message?.content) {
-        let content = aiResult.choices[0].message.content;
-        // Try to parse as JSON array if possible
-        try {
-          const parsed = JSON.parse(content);
-          if (Array.isArray(parsed)) {
-            recArray = parsed.filter(Boolean);
-          } else if (typeof parsed === 'object' && parsed !== null && parsed.recommendations) {
-            recArray = Array.isArray(parsed.recommendations)
-              ? parsed.recommendations.filter(Boolean)
-              : [parsed.recommendations].filter(Boolean);
-          } else if (typeof parsed === 'string') {
-            recArray = parsed.split(/\n|\r/).filter(Boolean);
-          }
-        } catch {
-          // Fallback: split lines and filter numbered/bulleted items
-          recArray = content.split(/\n|\r/)
-            .filter(line => /^\s*(\d+\.|\*|\u2022)/.test(line) || line.trim().length > 0)
-            .map(line => line.replace(/^\s*(\d+\.|\*|\u2022)\s*/, ''))
-            .map(line => line.replace(/^[\u2022\*]+/g, ''))
-            .map(line => line.replace(/(^|\s)[\u{1F300}-\u{1FAFF}]+/gu, ''))
-            .map(text => text.trim())
-            .filter(Boolean)
-            .slice(0, 5);
+      
+      if (aiResult.choices?.[0]?.message?.content) {
+        const aiContent = aiResult.choices[0].message.content;
+        // Parse AI response into recommendations
+        const aiRecs = aiContent.split('\n')
+          .filter(line => line.trim().length > 10)
+          .map(line => line.replace(/^\d+\.\s*/, '').trim())
+          .slice(0, 5);
+        
+        if (aiRecs.length > 0) {
+          recommendations = {
+            recommendations: aiRecs,
+            type: 'ai-powered',
+            generatedAt: new Date().toISOString()
+          };
+        } else {
+          throw new Error('AI returned no valid recommendations');
         }
-      } else if (aiResult.plan) {
-        recArray = [aiResult.plan];
-      } else if (aiResult.response) {
-        recArray = [aiResult.response];
-      }
-      recommendations = { recommendations: recArray };
-    } catch (err) {
-      console.log('Groq API error:', err);
-    }
-    if (!recommendations || !recommendations.recommendations) {
-      if (courses && courses.length > 0) {
-        recommendations = {
-          recommendations: `Based on your courses: ${courses.map(c => c.name).join(", ")}, try reviewing your notes, practicing key concepts, and planning study sessions for each course.`
-        };
       } else {
-        recommendations = { recommendations: "Add some courses to get personalized study recommendations!" };
+        throw new Error('AI response malformed');
       }
+    } catch (aiError) {
+      console.log('AI recommendation failed, using algorithmic approach:', aiError.message);
+      // Fallback to algorithmic recommendations
+      recommendations = await recommendationEngine.generateRecommendations(supabaseId);
     }
+
     res.json(recommendations);
-  } catch (err) {
-    console.log('RECOMMENDATIONS ERROR:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// --- Home route ---
-app.get('/', (req, res) => {
-  res.send('Backend API is running');
-});
-
-// --- User routes ---
-app.post('/api/users', async (req, res) => {
-  try {
-    const { supabaseId, name, email } = req.body;
-    const user = new User({ supabaseId, name, email });
-    await user.save();
-    res.status(201).json(user);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.get('/api/users/:supabaseId', async (req, res) => {
-  try {
-    const user = await User.findOne({ supabaseId: req.params.supabaseId });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(user);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// --- Assignment routes ---
-app.post('/api/assignments', async (req, res) => {
-  try {
-    const assignment = new Assignment(req.body);
-    await assignment.save();
-    res.status(201).json(assignment);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.get('/api/assignments/:supabaseId', async (req, res) => {
-  try {
-    const assignments = await Assignment.find({ supabaseId: req.params.supabaseId });
-    res.json(assignments);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// --- Note routes ---
-app.post('/api/notes', async (req, res) => {
-  try {
-    const note = new Note(req.body);
-    await note.save();
-    res.status(201).json(note);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.get('/api/notes/:supabaseId', async (req, res) => {
-  try {
-    const notes = await Note.find({ supabaseId: req.params.supabaseId });
-    res.json(notes);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// --- Course routes ---
-app.post('/api/courses', async (req, res) => {
-  try {
-    const { supabaseId, name, semester } = req.body;
-    const existing = await Course.findOne({ supabaseId, name, semester });
-    if (existing) {
-      return res.status(409).json({ error: 'Course already exists for this semester.' });
-    }
-    const course = new Course(req.body);
-    await course.save();
-    res.status(201).json(course);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.get('/api/courses/:supabaseId', async (req, res) => {
-  try {
-    const courses = await Course.find({ supabaseId: req.params.supabaseId });
-    res.json(courses);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+  } catch (error) {
+    console.error('Recommendations endpoint error:', error);
+    // Final fallback
+    const fallback = await recommendationEngine.getFallbackRecommendations(req.body.supabaseId);
+    res.json(fallback);
   }
 });
 
