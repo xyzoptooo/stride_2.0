@@ -606,10 +606,22 @@ app.get('/api/courses/:supabaseId', async (req, res) => {
 // --- Course creation endpoint ---
 app.post('/api/courses', async (req, res) => {
   try {
+    const { supabaseId, name } = req.body;
+    if (!supabaseId || !name) {
+      const missing = [];
+      if (!supabaseId) missing.push('supabaseId');
+      if (!name) missing.push('name');
+      return res.status(400).json({ error: `Missing required field(s): ${missing.join(', ')}` });
+    }
     const course = new Course(req.body);
     await course.save();
     res.status(201).json(course);
   } catch (err) {
+    // If it's a Mongoose validation error, include details
+    if (err.name === 'ValidationError') {
+      const errors = Object.values(err.errors).map(e => e.message);
+      return res.status(400).json({ error: 'Validation error', details: errors });
+    }
     res.status(400).json({ error: err.message });
   }
 });
