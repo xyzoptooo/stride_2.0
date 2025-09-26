@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import multer from 'multer';
 import { parseSyllabus } from './syllabusParser.js';
+import { AcademicDocumentParser } from './academicParser.js';
 import axios from 'axios';
 import base64 from 'base-64';
 import fetch from 'node-fetch';
@@ -355,19 +356,30 @@ app.post('/api/mindmap', async (req, res) => {
 
 const upload = multer();
 // --- Syllabus import endpoint (file upload) ---
+// Syllabus import endpoint now supports OCR for images and scanned PDFs
 app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    let parsed;
+    const { courseCode, startDate } = req.body;
+    let text = '';
     try {
-      parsed = await parseSyllabus(req.file);
+      // Layer 1: OCR/Text Extraction
+      text = await parseSyllabus(req.file, true); // true = return raw text
     } catch (err) {
+      return res.status(500).json({ error: 'Failed to extract text from file.' });
+    }
+    // Layer 2: AcademicDocumentParser
+    const parser = new AcademicDocumentParser(courseCode, startDate);
+    const parseResult = await parser.parseDocument(text);
+    // If result is incomplete, fallback to Groq (LLM)
+    if (!parseResult.success || !parseResult.data || (parseResult.data.courses?.length === 0 && parseResult.data.assignments?.length === 0)) {
       try {
+        const prompt = `Extract all courses, meeting days/times, instructors, locations, assignments, and due dates from the following text.\nCourse code: ${courseCode || ''}\nCourse start date: ${startDate || ''}\nText: ${text}`;
         const aiPayload = {
           model: 'llama-3.3-70b-versatile',
           messages: [
             { role: 'system', content: 'You are an expert academic assistant.' },
-            { role: 'user', content: `Extract all assignments and courses with due dates from this syllabus text:\n${req.file.buffer.toString('utf-8')}` }
+            { role: 'user', content: prompt }
           ]
         };
         const response = await fetch(process.env.GROQ_API_URL, {
@@ -379,12 +391,20 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
           body: JSON.stringify(aiPayload)
         });
         const aiResult = await response.json();
-        parsed = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
+        const aiContent = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
+        return res.json({
+          source: 'llm',
+          data: aiContent
+        });
       } catch (aiErr) {
-        return res.status(500).json({ error: 'Failed to parse syllabus with both rule-based and AI methods.' });
+        return res.status(500).json({ error: 'Failed to parse syllabus with all methods.' });
       }
     }
-    res.json({ parsed });
+    // Success: return parser result
+    res.json({
+      source: 'parser',
+      ...parseResult
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1,5 +1,7 @@
+
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
+import { ocrImageBuffer, extractTextFromPdfBuffer } from './ocrHelper.js';
 
 // Rule-based extraction for assignments/courses from text
 function extractAssignmentsAndCourses(text) {
@@ -21,11 +23,12 @@ function extractAssignmentsAndCourses(text) {
   return { assignments, courses };
 }
 
-async function parseSyllabus(file) {
+
+// If returnRawText is true, return the extracted text instead of parsed assignments/courses
+async function parseSyllabus(file, returnRawText = false) {
   let text = '';
   if (file.mimetype === 'application/pdf') {
-    const data = await pdfParse(file.buffer);
-    text = data.text;
+    text = await extractTextFromPdfBuffer(file.buffer);
   } else if (
     file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
     file.mimetype === 'application/msword'
@@ -34,9 +37,12 @@ async function parseSyllabus(file) {
     text = result.value;
   } else if (file.mimetype.startsWith('text/')) {
     text = file.buffer.toString('utf-8');
+  } else if (file.mimetype.startsWith('image/')) {
+    text = await ocrImageBuffer(file.buffer);
   } else {
     throw new Error('Unsupported file type');
   }
+  if (returnRawText) return text;
   return extractAssignmentsAndCourses(text);
 }
 
