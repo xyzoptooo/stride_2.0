@@ -77,8 +77,11 @@ async function validateInput(buffer, filename) {
 
     let type = null;
     let signatureUsed = null;
-    // Try all possible signatures for file-type
-    if (typeof fileType.fromBuffer === 'function') {
+    // Try all possible signatures for file-type, including v18+ API
+    if (typeof fileType.fileTypeFromBuffer === 'function') {
+      type = await fileType.fileTypeFromBuffer(buffer);
+      signatureUsed = 'fileType.fileTypeFromBuffer';
+    } else if (typeof fileType.fromBuffer === 'function') {
       type = await fileType.fromBuffer(buffer);
       signatureUsed = 'fileType.fromBuffer';
     } else if (fileType.default && typeof fileType.default.fromBuffer === 'function') {
