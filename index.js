@@ -358,54 +358,76 @@ const upload = multer();
 // --- Syllabus import endpoint (file upload) ---
 // Syllabus import endpoint now supports OCR for images and scanned PDFs
 app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
+  console.log('--- /api/syllabus/import called ---');
+  if (req.file) {
+    console.log('File received:', req.file.originalname, req.file.mimetype, req.file.size);
+  } else {
+    console.log('No file received');
+  }
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!req.file) {
+      console.error('No file uploaded');
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
     const { courseCode, startDate } = req.body;
     let text = '';
     try {
-      // Layer 1: OCR/Text Extraction
+      console.log('Starting OCR/Text Extraction...');
       text = await parseSyllabus(req.file, true); // true = return raw text
+      console.log('OCR/Text Extraction complete. Text length:', text.length);
     } catch (err) {
+      console.error('Failed to extract text from file:', err);
       return res.status(500).json({ error: 'Failed to extract text from file.' });
     }
     // Layer 2: AcademicDocumentParser
-    const parser = new AcademicDocumentParser(courseCode, startDate);
-    const parseResult = await parser.parseDocument(text);
-    // If result is incomplete, fallback to Groq (LLM)
-    if (!parseResult.success || !parseResult.data || (parseResult.data.courses?.length === 0 && parseResult.data.assignments?.length === 0)) {
-      try {
-        const prompt = `Extract all courses, meeting days/times, instructors, locations, assignments, and due dates from the following text.\nCourse code: ${courseCode || ''}\nCourse start date: ${startDate || ''}\nText: ${text}`;
-        const aiPayload = {
-          model: 'llama-3.3-70b-versatile',
-          messages: [
-            { role: 'system', content: 'You are an expert academic assistant.' },
-            { role: 'user', content: prompt }
-          ]
-        };
-        const response = await fetch(process.env.GROQ_API_URL, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(aiPayload)
-        });
-        const aiResult = await response.json();
-        const aiContent = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
-        return res.json({
-          source: 'llm',
-          data: aiContent
-        });
-      } catch (aiErr) {
-        return res.status(500).json({ error: 'Failed to parse syllabus with all methods.' });
+    try {
+      console.log('Starting AcademicDocumentParser...');
+      const parser = new AcademicDocumentParser(courseCode, startDate);
+      const parseResult = await parser.parseDocument(text);
+      console.log('AcademicDocumentParser result:', parseResult);
+      // If result is incomplete, fallback to Groq (LLM)
+      if (!parseResult.success || !parseResult.data || (parseResult.data.courses?.length === 0 && parseResult.data.assignments?.length === 0)) {
+        try {
+          console.log('Falling back to Groq LLM...');
+          const prompt = `Extract all courses, meeting days/times, instructors, locations, assignments, and due dates from the following text.\nCourse code: ${courseCode || ''}\nCourse start date: ${startDate || ''}\nText: ${text}`;
+          const aiPayload = {
+            model: 'llama-3.3-70b-versatile',
+            messages: [
+              { role: 'system', content: 'You are an expert academic assistant.' },
+              { role: 'user', content: prompt }
+            ]
+          };
+          const response = await fetch(process.env.GROQ_API_URL, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(aiPayload)
+          });
+          const aiResult = await response.json();
+          const aiContent = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
+          console.log('Groq LLM result:', aiContent);
+          return res.json({
+            source: 'llm',
+            data: aiContent
+          });
+        } catch (aiErr) {
+          console.error('Groq LLM fallback failed:', aiErr);
+          return res.status(500).json({ error: 'Failed to parse syllabus with all methods.' });
+        }
       }
+      // Success: return parser result
+      res.json({
+        source: 'parser',
+        ...parseResult
+      });
+    } catch (parseErr) {
+      console.error('AcademicDocumentParser failed:', parseErr);
+      return res.status(500).json({ error: 'Failed to parse syllabus.' });
     }
-    // Success: return parser result
-    res.json({
-      source: 'parser',
-      ...parseResult
-    });
   } catch (err) {
+    console.error('Unexpected error in /api/syllabus/import:', err);
     res.status(500).json({ error: err.message });
   }
 });
