@@ -207,15 +207,21 @@ class AcademicDocumentParser {
 
   _extractCourses(text) {
     const courses = [];
+    const usedNames = new Set();
     PARSING_CONFIG.COURSE_CODE_PATTERNS.forEach(pattern => {
       const matches = text.match(pattern);
       if (matches) {
         matches.forEach(match => {
-          if (!courses.find(c => c.code === match.replace(/\s+/g, ''))) {
-            courses.push({
-              code: match.replace(/\s+/g, ''),
-              name: this._extractCourseName(text, match)
-            });
+          const code = match.replace(/\s+/g, '');
+          if (!courses.find(c => c.code === code)) {
+            const name = this._extractCourseName(text, match);
+            // Only assign name if not already used for another code
+            if (name && !usedNames.has(name)) {
+              usedNames.add(name);
+              courses.push({ code, name });
+            } else {
+              courses.push({ code });
+            }
           }
         });
       }
@@ -244,6 +250,7 @@ class AcademicDocumentParser {
     // Extract course codes and names from timetable-style text
     const lines = text.split(/\n|\r|\r\n/);
     const courses = [];
+    const usedNames = new Set();
     for (let i = 0; i < lines.length; i++) {
       const codeMatch = lines[i].match(/[A-Z]{2,6}\s*\d{3,4}[A-Z]?/);
       if (codeMatch) {
@@ -256,7 +263,13 @@ class AcademicDocumentParser {
             break;
           }
         }
-        courses.push({ code: codeMatch[0].replace(/\s+/g, ''), name });
+        const code = codeMatch[0].replace(/\s+/g, '');
+        if (name && !usedNames.has(name)) {
+          usedNames.add(name);
+          courses.push({ code, name });
+        } else {
+          courses.push({ code });
+        }
       }
     }
     return courses;
