@@ -7,7 +7,7 @@ import multer from 'multer';
 import { parseSyllabus } from './syllabusParser.js';
 import { AcademicDocumentParser } from './academicParser.js';
 import axios from 'axios';
-import base64 from 'base-64';
+// Removed base-64; use Buffer for base64 encoding
 import fetch from 'node-fetch';
 
 // --- Hybrid Recommendation Engine ---
@@ -370,67 +370,38 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
     const { courseCode, startDate } = req.body;
-    let text = '';
+    // --- TEST: Send image directly to Groq LLM ---
     try {
-      console.log('Starting OCR/Text Extraction...');
-      text = await parseSyllabus(req.file, true); // true = return raw text
-      console.log('OCR/Text Extraction complete. Text length:', text.length);
-    } catch (err) {
-      console.error('Failed to extract text from file:', err && err.stack ? err.stack : err);
-      if (err && err.message) {
-        return res.status(500).json({ error: 'Failed to extract text from file: ' + err.message });
-      } else {
-        return res.status(500).json({ error: 'Failed to extract text from file.' });
-      }
-    }
-    // Layer 2: AcademicDocumentParser
-    try {
-  console.log('OCR/Text Extraction output:');
-  console.log(text);
-  console.log('Starting AcademicDocumentParser...');
-      const parser = new AcademicDocumentParser(courseCode, startDate);
-      const parseResult = await parser.parseDocument(text);
-      console.log('AcademicDocumentParser result:', parseResult);
-      // If result is incomplete, fallback to Groq (LLM)
-      if (!parseResult.success || !parseResult.data || (parseResult.data.courses?.length === 0 && parseResult.data.assignments?.length === 0)) {
-        try {
-          console.log('Falling back to Groq LLM...');
-          const prompt = `Extract all courses, meeting days/times, instructors, locations, assignments, and due dates from the following text.\nCourse code: ${courseCode || ''}\nCourse start date: ${startDate || ''}\nText: ${text}`;
-          const aiPayload = {
-            model: 'llama-3.3-70b-versatile',
-            messages: [
-              { role: 'system', content: 'You are an expert academic assistant.' },
-              { role: 'user', content: prompt }
-            ]
-          };
-          const response = await fetch(process.env.GROQ_API_URL, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(aiPayload)
-          });
-          const aiResult = await response.json();
-          const aiContent = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
-          console.log('Groq LLM result:', aiContent);
-          return res.json({
-            source: 'llm',
-            data: aiContent
-          });
-        } catch (aiErr) {
-          console.error('Groq LLM fallback failed:', aiErr);
-          return res.status(500).json({ error: 'Failed to parse syllabus with all methods.' });
-        }
-      }
-      // Success: return parser result
-      res.json({
-        source: 'parser',
-        ...parseResult
+      console.log('Testing Groq LLM with image input...');
+      // Convert image buffer to base64
+  const imageBase64 = Buffer.from(req.file.buffer).toString('base64');
+      const prompt = `Extract all course codes and names from this timetable image.`;
+      const aiPayload = {
+        model: 'llama-3-vision', // Change to your multimodal model name
+        messages: [
+          { role: 'system', content: 'You are an expert academic assistant.' },
+          { role: 'user', content: prompt }
+        ],
+        image: imageBase64
+      };
+      const response = await fetch(process.env.GROQ_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(aiPayload)
       });
-    } catch (parseErr) {
-      console.error('AcademicDocumentParser failed:', parseErr);
-      return res.status(500).json({ error: 'Failed to parse syllabus.' });
+      const aiResult = await response.json();
+      const aiContent = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
+      console.log('Groq LLM image result:', aiContent);
+      return res.json({
+        source: 'llm-image',
+        data: aiContent
+      });
+    } catch (aiErr) {
+      console.error('Groq LLM image test failed:', aiErr);
+      return res.status(500).json({ error: 'Failed to test Groq LLM with image.' });
     }
   } catch (err) {
     console.error('Unexpected error in /api/syllabus/import:', err);
@@ -716,7 +687,7 @@ const paymentStatusStore = {};
 async function getMpesaAccessToken() {
   const consumerKey = process.env.MPESA_CONSUMER_KEY;
   const consumerSecret = process.env.MPESA_CONSUMER_SECRET;
-  const auth = base64.encode(`${consumerKey}:${consumerSecret}`);
+  const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
   const url = `${process.env.MPESA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`;
   const res = await axios.get(url, {
     headers: { Authorization: `Basic ${auth}` }
@@ -757,7 +728,7 @@ app.post('/api/mpesa/stkpush', async (req, res) => {
     const businessShortCode = '5468788';
     const partyB = '4953118';
     const passkey = process.env.MPESA_PASSKEY;
-    const password = base64.encode(businessShortCode + passkey + timestamp);
+  const password = Buffer.from(businessShortCode + passkey + timestamp).toString('base64');
     const stkUrl = `${process.env.MPESA_BASE_URL}/mpesa/stkpush/v1/processrequest`;
     const payload = {
       BusinessShortCode: businessShortCode,
