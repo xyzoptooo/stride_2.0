@@ -57,8 +57,25 @@ async function validateInput(buffer, filename) {
   let mimeType = null;
   if (!fileExtension || !['pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'].includes(fileExtension)) {
     // Try to detect MIME type from buffer
-  const fileType = await import('file-type');
-  const type = await fileType.fromBuffer(buffer);
+    const fileType = await import('file-type');
+    let type = null;
+    // Try all possible signatures for file-type
+    if (typeof fileType.fromBuffer === 'function') {
+      console.log('fileType.fromBuffer(buffer) signature used');
+      type = await fileType.fromBuffer(buffer);
+    } else if (fileType.default && typeof fileType.default.fromBuffer === 'function') {
+      console.log('fileType.default.fromBuffer(buffer) signature used');
+      type = await fileType.default.fromBuffer(buffer);
+    } else if (typeof fileType.default === 'function') {
+      console.log('fileType.default(buffer) signature used');
+      type = await fileType.default(buffer);
+    } else if (typeof fileType === 'function') {
+      console.log('fileType(buffer) signature used');
+      type = await fileType(buffer);
+    } else {
+      console.error('No valid file-type signature found');
+      throw new Error('file-type import signature not supported');
+    }
     mimeType = type?.mime;
     if (!mimeType || !CONFIG.SUPPORTED_MIME_TYPES.has(mimeType)) {
       throw new OCRProcessingError(`Unsupported file type: ${fileExtension || mimeType || 'unknown'}`, 'UNSUPPORTED_TYPE');
