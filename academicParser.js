@@ -113,10 +113,11 @@ class AcademicDocumentParser {
   }
 
   _preprocessText(text) {
+    // Preserve line breaks for timetable parsing
     return text
       .replace(/\r\n/g, '\n')
-      .replace(/\s+/g, ' ')
-      .replace(/[^\x20-\x7E\n]/g, '')
+      .replace(/\r/g, '\n')
+      .replace(/[^\x20-\x7E\n\t]/g, '') // Remove non-printable except newline/tab
       .trim();
   }
 
@@ -146,11 +147,11 @@ class AcademicDocumentParser {
     };
     const scores = {};
     for (const [type, patterns] of Object.entries(indicators)) {
-      scores[type] = patterns.reduce((score, pattern) => 
+      scores[type] = patterns.reduce((score, pattern) =>
         score + (pattern.test(text) ? 1 : 0), 0
       );
     }
-    const detectedType = Object.keys(scores).reduce((a, b) => 
+    const detectedType = Object.keys(scores).reduce((a, b) =>
       scores[a] > scores[b] ? a : b
     );
     return scores[detectedType] > 0 ? detectedType : 'unknown';
@@ -159,22 +160,21 @@ class AcademicDocumentParser {
   _parseSyllabus(text) {
     const courses = this._extractCourses(text);
     const schedule = this._extractSchedule(text);
-    const assignments = this._extractAssignments(text);
     return {
       type: 'syllabus',
       courses: courses.length > 0 ? courses : this._fallbackCourseExtraction(text),
       schedule: schedule,
-      assignments: assignments,
+      assignments: this._extractAssignments(text),
       instructors: this._extractInstructors(text),
       location: this._extractLocation(text)
     };
   }
 
   _parseTimetable(text) {
-    const courses = this._extractCourses(text) || this._extractTimetableEntries(text);
+    const courses = this._extractCourses(text);
     return {
       type: 'timetable',
-      courses: courses,
+      courses: courses.length > 0 ? courses : this._extractTimetableEntries(text),
       schedule: this._extractSchedule(text),
       assignments: []
     };
@@ -205,6 +205,45 @@ class AcademicDocumentParser {
         });
       }
     });
+    return courses;
+  }
+
+  _extractCourseName(text, courseCode) {
+    // Find the line containing the course code, then return the next non-empty line as the name
+    const lines = text.split(/\n|\r|\r\n/);
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(courseCode)) {
+        // Look ahead for a non-empty line that is not another course code
+        for (let j = i + 1; j < lines.length; j++) {
+          const candidate = lines[j].trim();
+          if (candidate && !/[A-Z]{2,6}\s*\d{3,4}[A-Z]?/.test(candidate)) {
+            return candidate;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  _extractTimetableEntries(text) {
+    // Extract course codes and names from timetable-style text
+    const lines = text.split(/\n|\r|\r\n/);
+    const courses = [];
+    for (let i = 0; i < lines.length; i++) {
+      const codeMatch = lines[i].match(/[A-Z]{2,6}\s*\d{3,4}[A-Z]?/);
+      if (codeMatch) {
+        let name = null;
+        // Look ahead for a non-empty line that is not another course code
+        for (let j = i + 1; j < lines.length; j++) {
+          const candidate = lines[j].trim();
+          if (candidate && !/[A-Z]{2,6}\s*\d{3,4}[A-Z]?/.test(candidate)) {
+            name = candidate;
+            break;
+          }
+        }
+        courses.push({ code: codeMatch[0].replace(/\s+/g, ''), name });
+      }
+    }
     return courses;
   }
 
@@ -259,7 +298,7 @@ class AcademicDocumentParser {
   }
 
   _extractDays(text) {
-    return PARSING_CONFIG.DAYS_OF_WEEK.filter(day => 
+    return PARSING_CONFIG.DAYS_OF_WEEK.filter(day =>
       new RegExp(`\\b${day}\\b`, 'i').test(text)
     );
   }
@@ -297,7 +336,7 @@ class AcademicDocumentParser {
       'course', 'professor', 'assignment', 'lecture', 'exam', 'quiz',
       'reading', 'homework', 'syllabus', 'schedule', 'deadline'
     ];
-    const found = academicTerms.filter(term => 
+    const found = academicTerms.filter(term =>
       new RegExp(`\\b${term}\\b`, 'i').test(text)
     );
     return { score: found.length / academicTerms.length, terms: found };
@@ -305,14 +344,6 @@ class AcademicDocumentParser {
 
   _fallbackCourseExtraction(text) {
     return [];
-  }
-
-  _extractTimetableEntries(text) {
-    return [];
-  }
-
-  _extractCourseName(text, courseCode) {
-    return null;
   }
 
   _extractInstructors(text) {
