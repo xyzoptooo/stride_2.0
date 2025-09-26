@@ -151,10 +151,25 @@ class AcademicDocumentParser {
         score + (pattern.test(text) ? 1 : 0), 0
       );
     }
+    // Logging for debug
+    if (typeof global !== 'undefined' && global.console) {
+      global.console.log('[AcademicDocumentParser] Document type scores:', scores);
+    }
+    // Fallback: if no keywords but course codes detected, treat as timetable
+    const hasCourseCodes = PARSING_CONFIG.COURSE_CODE_PATTERNS.some(pattern => pattern.test(text));
     const detectedType = Object.keys(scores).reduce((a, b) =>
       scores[a] > scores[b] ? a : b
     );
-    return scores[detectedType] > 0 ? detectedType : 'unknown';
+    if (scores[detectedType] > 0) {
+      return detectedType;
+    } else if (hasCourseCodes) {
+      if (typeof global !== 'undefined' && global.console) {
+        global.console.log('[AcademicDocumentParser] Fallback: detected course codes, treating as timetable');
+      }
+      return 'timetable';
+    } else {
+      return 'unknown';
+    }
   }
 
   _parseSyllabus(text) {
