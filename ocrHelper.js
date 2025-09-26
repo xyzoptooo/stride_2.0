@@ -4,7 +4,7 @@
 import Tesseract from 'tesseract.js';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
-import * as fileType from 'file-type';
+import fileType from 'file-type';
 import { createLogger, format, transports } from 'winston';
 
 // Configure structured logging
@@ -57,7 +57,7 @@ async function validateInput(buffer, filename) {
   let mimeType = null;
   if (!fileExtension || !['pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'].includes(fileExtension)) {
     // Try to detect MIME type from buffer
-    const type = await fileType.fromBuffer(buffer);
+  const type = await fileType.fromBuffer(buffer);
     mimeType = type?.mime;
     if (!mimeType || !CONFIG.SUPPORTED_MIME_TYPES.has(mimeType)) {
       throw new OCRProcessingError(`Unsupported file type: ${fileExtension || mimeType || 'unknown'}`, 'UNSUPPORTED_TYPE');
