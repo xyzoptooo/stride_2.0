@@ -385,7 +385,9 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
     }
     // Layer 2: AcademicDocumentParser
     try {
-      console.log('Starting AcademicDocumentParser...');
+  console.log('OCR/Text Extraction output:');
+  console.log(text);
+  console.log('Starting AcademicDocumentParser...');
       const parser = new AcademicDocumentParser(courseCode, startDate);
       const parseResult = await parser.parseDocument(text);
       console.log('AcademicDocumentParser result:', parseResult);
