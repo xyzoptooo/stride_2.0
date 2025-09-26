@@ -55,59 +55,69 @@ async function validateInput(buffer, filename) {
 
   let fileExtension = filename ? filename.split('.').pop().toLowerCase() : null;
   let mimeType = null;
+  // If extension is missing or not recognized, detect MIME type from buffer
   if (!fileExtension || !['pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'].includes(fileExtension)) {
-    // Try to detect MIME type from buffer
-    const fileType = await import('file-type');
+    let fileType;
+    try {
+      fileType = await import('file-type');
+    } catch (err) {
+      logger.error('Failed to import file-type:', err);
+      throw new OCRProcessingError('Failed to import file-type', 'IMPORT_FAILED');
+    }
+
+    // Log the structure of the imported fileType module for debugging
+    logger.info('fileType module typeof:', typeof fileType);
+    logger.info('fileType module keys:', Object.keys(fileType));
+    logger.info('fileType module inspect:', JSON.stringify(fileType, null, 2));
+    if (fileType.default) {
+      logger.info('fileType.default typeof:', typeof fileType.default);
+      logger.info('fileType.default keys:', Object.keys(fileType.default));
+      logger.info('fileType.default inspect:', JSON.stringify(fileType.default, null, 2));
+    }
+
     let type = null;
+    let signatureUsed = null;
     // Try all possible signatures for file-type
     if (typeof fileType.fromBuffer === 'function') {
-      console.log('fileType.fromBuffer(buffer) signature used');
       type = await fileType.fromBuffer(buffer);
+      signatureUsed = 'fileType.fromBuffer';
     } else if (fileType.default && typeof fileType.default.fromBuffer === 'function') {
-      console.log('fileType.default.fromBuffer(buffer) signature used');
       type = await fileType.default.fromBuffer(buffer);
+      signatureUsed = 'fileType.default.fromBuffer';
     } else if (typeof fileType.default === 'function') {
-      console.log('fileType.default(buffer) signature used');
       type = await fileType.default(buffer);
+      signatureUsed = 'fileType.default (function)';
     } else if (typeof fileType === 'function') {
-      console.log('fileType(buffer) signature used');
       type = await fileType(buffer);
+      signatureUsed = 'fileType (function)';
     } else {
-      console.error('No valid file-type signature found');
-      throw new Error('file-type import signature not supported');
+      logger.error('No valid file-type signature found');
+      throw new OCRProcessingError('file-type import signature not supported', 'FILE_TYPE_SIGNATURE');
     }
-    mimeType = type?.mime;
-    if (!mimeType || !CONFIG.SUPPORTED_MIME_TYPES.has(mimeType)) {
-      throw new OCRProcessingError(`Unsupported file type: ${fileExtension || mimeType || 'unknown'}`, 'UNSUPPORTED_TYPE');
-    }
+    logger.info(`file-type signature used: ${signatureUsed}`);
+    logger.info(`Detected file type: ${type ? type.mime : 'unknown'}`);
+    mimeType = type ? type.mime : null;
+  } else {
+    // Guess MIME type from extension
+    const extToMime = {
+      pdf: 'application/pdf',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      doc: 'application/msword',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      bmp: 'image/bmp',
+      tiff: 'image/tiff',
+    };
+    mimeType = extToMime[fileExtension] || null;
   }
-}
 
-// Enhanced DOCX extraction with error handling
-async function extractTextFromDocxBuffer(buffer, filename) {
-  const startTime = Date.now();
-  try {
-    await validateInput(buffer, filename);
-    const result = await mammoth.extractRawText({ buffer });
-    if (!result.value || result.value.trim().length < CONFIG.MIN_TEXT_LENGTH) {
-      logger.warn('DOCX extracted minimal or no text', { filename, textLength: result.value?.length });
-      throw new OCRProcessingError('Document contains no extractable text', 'NO_EXTRACTABLE_TEXT');
-    }
-    logger.info('DOCX extraction completed', {
-      filename,
-      duration: Date.now() - startTime,
-      textLength: result.value.length
-    });
-    return result.value;
-  } catch (error) {
-    logger.error('DOCX extraction failed', {
-      filename,
-      error: error.message,
-      duration: Date.now() - startTime
-    });
-    if (error instanceof OCRProcessingError) throw error;
-    throw new OCRProcessingError(`DOCX processing failed: ${error.message}`, 'PROCESSING_FAILED');
+  if (!mimeType || !CONFIG.SUPPORTED_MIME_TYPES.has(mimeType)) {
+    throw new OCRProcessingError(`Unsupported file type: ${mimeType || fileExtension}`, 'UNSUPPORTED_TYPE');
   }
+  // Optionally return mimeType for downstream use
+  return mimeType;
 }
 
 // Robust OCR with timeout and progress tracking
