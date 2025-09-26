@@ -376,8 +376,12 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
       text = await parseSyllabus(req.file, true); // true = return raw text
       console.log('OCR/Text Extraction complete. Text length:', text.length);
     } catch (err) {
-      console.error('Failed to extract text from file:', err);
-      return res.status(500).json({ error: 'Failed to extract text from file.' });
+      console.error('Failed to extract text from file:', err && err.stack ? err.stack : err);
+      if (err && err.message) {
+        return res.status(500).json({ error: 'Failed to extract text from file: ' + err.message });
+      } else {
+        return res.status(500).json({ error: 'Failed to extract text from file.' });
+      }
     }
     // Layer 2: AcademicDocumentParser
     try {
