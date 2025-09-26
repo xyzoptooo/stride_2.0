@@ -57,7 +57,8 @@ async function validateInput(buffer, filename) {
   let mimeType = null;
   if (!fileExtension || !['pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'].includes(fileExtension)) {
     // Try to detect MIME type from buffer
-  const type = await fromBuffer(buffer);
+    const { fromBuffer } = await import('file-type');
+    const type = await fromBuffer(buffer);
     mimeType = type?.mime;
     if (!mimeType || !CONFIG.SUPPORTED_MIME_TYPES.has(mimeType)) {
       throw new OCRProcessingError(`Unsupported file type: ${fileExtension || mimeType || 'unknown'}`, 'UNSUPPORTED_TYPE');
