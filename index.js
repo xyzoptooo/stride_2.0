@@ -566,9 +566,14 @@ app.post('/api/notes', async (req, res) => {
 // Get all notes for a user
 app.get('/api/notes/:supabaseId', async (req, res) => {
   try {
-    const notes = await Note.find({ supabaseId: req.params.supabaseId });
+    const { supabaseId } = req.params;
+    if (!supabaseId || typeof supabaseId !== 'string' || supabaseId.length < 8) {
+      return res.status(400).json({ error: 'Invalid or missing supabaseId' });
+    }
+    const notes = await Note.find({ supabaseId });
     res.json(notes);
   } catch (err) {
+    console.error('Error fetching notes for user:', req.params.supabaseId, err);
     res.status(400).json({ error: err.message });
   }
 });
