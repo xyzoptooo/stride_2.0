@@ -4,7 +4,7 @@
 import Tesseract from 'tesseract.js';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
-import { fromBuffer } from 'file-type';
+// (No static import for file-type; use dynamic import below)
 import { createLogger, format, transports } from 'winston';
 
 // Configure structured logging
