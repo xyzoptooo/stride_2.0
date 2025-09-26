@@ -230,6 +230,5 @@ function hasMeaningfulText(text) {
 export { 
   ocrImageBuffer, 
   extractTextFromPdfBuffer, 
-  extractTextFromDocxBuffer,
   OCRProcessingError 
 };
