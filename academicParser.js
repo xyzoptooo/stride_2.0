@@ -207,17 +207,28 @@ class AcademicDocumentParser {
 
   _extractCourses(text) {
     const courses = [];
-    const usedNames = new Set();
-    PARSING_CONFIG.COURSE_CODE_PATTERNS.forEach(pattern => {
-      const matches = text.match(pattern);
-      if (matches) {
-        matches.forEach(match => {
-          const code = match.replace(/\s+/g, '');
+    const lines = text.split(/\n|\r|\r\n/);
+    for (let i = 0; i < lines.length; i++) {
+      // Find all course codes on this line
+      const codeMatches = [];
+      PARSING_CONFIG.COURSE_CODE_PATTERNS.forEach(pattern => {
+        const found = lines[i].match(pattern);
+        if (found) codeMatches.push(...found);
+      });
+      if (codeMatches.length > 0) {
+        // Find next non-empty line as name
+        let name = null;
+        for (let j = i + 1; j < lines.length; j++) {
+          const candidate = lines[j].trim();
+          if (candidate && !PARSING_CONFIG.COURSE_CODE_PATTERNS.some(p => p.test(candidate))) {
+            name = candidate;
+            break;
+          }
+        }
+        codeMatches.forEach(codeRaw => {
+          const code = codeRaw.replace(/\s+/g, '');
           if (!courses.find(c => c.code === code)) {
-            const name = this._extractCourseName(text, match);
-            // Only assign name if not already used for another code
-            if (name && !usedNames.has(name)) {
-              usedNames.add(name);
+            if (name) {
               courses.push({ code, name });
             } else {
               courses.push({ code });
@@ -225,7 +236,7 @@ class AcademicDocumentParser {
           }
         });
       }
-    });
+    }
     return courses;
   }
 
