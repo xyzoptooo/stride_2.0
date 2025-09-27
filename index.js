@@ -369,26 +369,22 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
       console.error('No file uploaded');
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    // OCR or text extraction
-    let extractedText = '';
-    if (req.file.mimetype.startsWith('image/')) {
-      // Use OCR for images
-      const { ocrImageBuffer } = await import('./ocrHelper.js');
-      extractedText = await ocrImageBuffer(req.file.buffer);
-    } else if (req.file.mimetype === 'application/pdf') {
-      const { extractTextFromPdfBuffer } = await import('./ocrHelper.js');
-      extractedText = await extractTextFromPdfBuffer(req.file.buffer);
-    } else {
-      extractedText = req.file.buffer.toString('utf-8');
-    }
-
-    // Send extracted text to GPT-5 for course/assignment/deadline extraction
-    const prompt = `Extract all course names, assignments, and deadlines from the following academic document. Return a JSON object with keys: courses (array of course names), assignments (array of objects with title and dueDate), deadlines (array of objects with title and dueDate).\n\nDocument:\n${extractedText}`;
+    // Encode file as base64
+    const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
+    // Prepare GPT-5 vision/multimodal prompt
+  const prompt = `Extract all course names, assignments, and deadlines from this academic document.\n\nReturn a valid JSON object with these keys:\n- courses: array of objects, each with { name, code (if available), professor (if available), credits (if available), schedule (if available) }\n- assignments: array of objects, each with { title, dueDate, course (if available), type (e.g. exam, quiz, project) }\n- deadlines: array of objects, each with { title, dueDate, relatedCourse (if available) }\n\nIf information is missing, leave fields blank.\nDo not include any explanation or extra text—only the JSON.`;
     const openaiPayload = {
-      model: 'gpt-5',
+      model: 'gpt-5-vision',
       messages: [
         { role: 'system', content: 'You are an expert academic assistant.' },
         { role: 'user', content: prompt }
+      ],
+      files: [
+        {
+          name: req.file.originalname,
+          mime_type: req.file.mimetype,
+          data: fileBase64
+        }
       ],
       max_tokens: 1000
     };
@@ -409,7 +405,7 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
       extracted = { raw: aiContent };
     }
     return res.json({
-      source: 'gpt-5',
+      source: 'gpt-5-vision',
       extracted
     });
   } catch (err) {
