@@ -369,40 +369,49 @@ app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
       console.error('No file uploaded');
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    const { courseCode, startDate } = req.body;
-    // --- TEST: Send image directly to Groq LLM ---
-    try {
-      console.log('Testing Groq LLM with image input...');
-      // Convert image buffer to base64
-  const imageBase64 = Buffer.from(req.file.buffer).toString('base64');
-      const prompt = `Extract all course codes and names from this timetable image.`;
-      const aiPayload = {
-        model: 'llama-3-vision', // Change to your multimodal model name
-        messages: [
-          { role: 'system', content: 'You are an expert academic assistant.' },
-          { role: 'user', content: prompt }
-        ],
-        image: imageBase64
-      };
-      const response = await fetch(process.env.GROQ_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(aiPayload)
-      });
-      const aiResult = await response.json();
-      const aiContent = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
-      console.log('Groq LLM image result:', aiContent);
-      return res.json({
-        source: 'llm-image',
-        data: aiContent
-      });
-    } catch (aiErr) {
-      console.error('Groq LLM image test failed:', aiErr);
-      return res.status(500).json({ error: 'Failed to test Groq LLM with image.' });
+    // OCR or text extraction
+    let extractedText = '';
+    if (req.file.mimetype.startsWith('image/')) {
+      // Use OCR for images
+      const { ocrImageBuffer } = await import('./ocrHelper.js');
+      extractedText = await ocrImageBuffer(req.file.buffer);
+    } else if (req.file.mimetype === 'application/pdf') {
+      const { extractTextFromPdfBuffer } = await import('./ocrHelper.js');
+      extractedText = await extractTextFromPdfBuffer(req.file.buffer);
+    } else {
+      extractedText = req.file.buffer.toString('utf-8');
     }
+
+    // Send extracted text to GPT-5 for course/assignment/deadline extraction
+    const prompt = `Extract all course names, assignments, and deadlines from the following academic document. Return a JSON object with keys: courses (array of course names), assignments (array of objects with title and dueDate), deadlines (array of objects with title and dueDate).\n\nDocument:\n${extractedText}`;
+    const openaiPayload = {
+      model: 'gpt-5',
+      messages: [
+        { role: 'system', content: 'You are an expert academic assistant.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 1000
+    };
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(openaiPayload)
+    });
+    const aiResult = await response.json();
+    const aiContent = aiResult.choices?.[0]?.message?.content || null;
+    let extracted;
+    try {
+      extracted = JSON.parse(aiContent);
+    } catch (e) {
+      extracted = { raw: aiContent };
+    }
+    return res.json({
+      source: 'gpt-5',
+      extracted
+    });
   } catch (err) {
     console.error('Unexpected error in /api/syllabus/import:', err);
     res.status(500).json({ error: err.message });
