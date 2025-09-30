@@ -7,6 +7,14 @@ dotenv.config();
 export const isProduction = process.env.NODE_ENV === 'production';
 export const isDevelopment = process.env.NODE_ENV === 'development';
 
+// CORS settings
+export const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://stride-2-0.onrender.com',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
 // Required environment variables
 export const requiredEnvVars = [
   'SUPABASE_SERVICE_KEY',

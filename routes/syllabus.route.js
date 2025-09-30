@@ -1,4 +1,6 @@
-app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
+import { authenticate } from '../middleware/auth.js';
+
+app.post('/api/syllabus/import', authenticate, upload.single('file'), async (req, res) => {
   console.log('--- /api/syllabus/import called ---');
   if (req.file) {
     console.log('File received:', req.file.originalname, req.file.mimetype, req.file.size);
