@@ -39,6 +39,27 @@ dotenv.config();
 // Initialize express app
 const app = express();
 
+// Root route handler
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'Welcome to SemesterStride API',
+    version: '1.0.0',
+    documentation: '/api-docs',
+    environment: process.env.NODE_ENV,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'Server is running',
+    uptime: process.uptime()
+  });
+});
+
 // Connect to MongoDB
 const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/semesterstride';
 mongoose.connect(MONGODB_URI)
