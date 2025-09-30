@@ -1,11 +1,10 @@
-// OCR engine for Academic Document Processing
+// Image Analysis engine for Academic Document Processing
 // Handles images, PDFs, and DOCX with proper error handling, logging, and performance safeguards
 
-import Tesseract from 'tesseract.js';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
-// (No static import for file-type; use dynamic import below)
 import { createLogger, format, transports } from 'winston';
+import axios from 'axios';
 
 // Configure structured logging
 const logger = createLogger({
@@ -22,7 +21,6 @@ const logger = createLogger({
 const CONFIG = {
   MAX_FILE_SIZE: 50 * 1024 * 1024, // 50MB
   OCR_TIMEOUT_MS: 120000, // 2 minutes
-  MIN_TEXT_CONFIDENCE: 0.7,
   MIN_TEXT_LENGTH: 10,
   SUPPORTED_MIME_TYPES: new Set([
     'image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/tiff',
@@ -31,207 +29,98 @@ const CONFIG = {
   ])
 };
 
-class OCRProcessingError extends Error {
-  constructor(message, errorCode, context = {}) {
-    super(message);
-    this.name = 'OCRProcessingError';
-    this.errorCode = errorCode;
-    this.context = context;
-  }
-}
-
-// Validate input before processing
-async function validateInput(buffer, filename) {
-  if (!buffer || buffer.length === 0) {
-    throw new OCRProcessingError('Empty file provided', 'EMPTY_FILE');
-  }
-
-  if (buffer.length > CONFIG.MAX_FILE_SIZE) {
-    throw new OCRProcessingError(
-      `File size ${buffer.length} exceeds limit ${CONFIG.MAX_FILE_SIZE}`,
-      'FILE_TOO_LARGE'
-    );
-  }
-
-  let fileExtension = filename ? filename.split('.').pop().toLowerCase() : null;
-  let mimeType = null;
-  // If extension is missing or not recognized, detect MIME type from buffer
-  if (!fileExtension || !['pdf', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'].includes(fileExtension)) {
-    let fileType;
-    try {
-      fileType = await import('file-type');
-    } catch (err) {
-      logger.error('Failed to import file-type:', err);
-      throw new OCRProcessingError('Failed to import file-type', 'IMPORT_FAILED');
-    }
-
-    // Log the structure of the imported fileType module for debugging
-    logger.info('fileType module typeof:', typeof fileType);
-    logger.info('fileType module keys:', Object.keys(fileType));
-    logger.info('fileType module inspect:', JSON.stringify(fileType, null, 2));
-    if (fileType.default) {
-      logger.info('fileType.default typeof:', typeof fileType.default);
-      logger.info('fileType.default keys:', Object.keys(fileType.default));
-      logger.info('fileType.default inspect:', JSON.stringify(fileType.default, null, 2));
-    }
-
-    let type = null;
-    let signatureUsed = null;
-    // Try all possible signatures for file-type, including v18+ API
-    if (typeof fileType.fileTypeFromBuffer === 'function') {
-      type = await fileType.fileTypeFromBuffer(buffer);
-      signatureUsed = 'fileType.fileTypeFromBuffer';
-    } else if (typeof fileType.fromBuffer === 'function') {
-      type = await fileType.fromBuffer(buffer);
-      signatureUsed = 'fileType.fromBuffer';
-    } else if (fileType.default && typeof fileType.default.fromBuffer === 'function') {
-      type = await fileType.default.fromBuffer(buffer);
-      signatureUsed = 'fileType.default.fromBuffer';
-    } else if (typeof fileType.default === 'function') {
-      type = await fileType.default(buffer);
-      signatureUsed = 'fileType.default (function)';
-    } else if (typeof fileType === 'function') {
-      type = await fileType(buffer);
-      signatureUsed = 'fileType (function)';
-    } else {
-      logger.error('No valid file-type signature found');
-      throw new OCRProcessingError('file-type import signature not supported', 'FILE_TYPE_SIGNATURE');
-    }
-    logger.info(`file-type signature used: ${signatureUsed}`);
-    logger.info(`Detected file type: ${type ? type.mime : 'unknown'}`);
-    mimeType = type ? type.mime : null;
-  } else {
-    // Guess MIME type from extension
-    const extToMime = {
-      pdf: 'application/pdf',
-      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      doc: 'application/msword',
-      png: 'image/png',
-      jpg: 'image/jpeg',
-      jpeg: 'image/jpeg',
-      gif: 'image/gif',
-      bmp: 'image/bmp',
-      tiff: 'image/tiff',
-    };
-    mimeType = extToMime[fileExtension] || null;
-  }
-
-  if (!mimeType || !CONFIG.SUPPORTED_MIME_TYPES.has(mimeType)) {
-    throw new OCRProcessingError(`Unsupported file type: ${mimeType || fileExtension}`, 'UNSUPPORTED_TYPE');
-  }
-  // Optionally return mimeType for downstream use
-  return mimeType;
-}
-
-// Robust OCR with timeout and progress tracking
+/**
+ * Processes an image buffer using GPT-5 Vision API for text extraction
+ * @param {Buffer} buffer - The image buffer to process
+ * @param {string} filename - Original filename (for logging)
+ * @returns {Promise<string>} Extracted text from the image
+ */
 async function ocrImageBuffer(buffer, filename) {
-  const startTime = Date.now();
-  return new Promise(async (resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new OCRProcessingError('OCR processing timeout', 'PROCESS_TIMEOUT'));
-    }, CONFIG.OCR_TIMEOUT_MS);
-    try {
-      await validateInput(buffer, filename);
-      Tesseract.recognize(buffer, 'eng', {
-        logger: m => logger.debug('Tesseract progress', { ...m, filename })
-      })
-      .then(({ data: { text, confidence } }) => {
-        clearTimeout(timeoutId);
-        if (!text || text.trim().length < CONFIG.MIN_TEXT_LENGTH) {
-          throw new OCRProcessingError('OCR extracted no meaningful text', 'NO_TEXT_FOUND');
-        }
-        if (confidence < CONFIG.MIN_TEXT_CONFIDENCE) {
-          logger.warn('Low OCR confidence', { filename, confidence });
-        }
-        logger.info('OCR completed', {
-          filename,
-          duration: Date.now() - startTime,
-          textLength: text.length,
-          confidence
-        });
-        resolve(text);
-      })
-      .catch(error => {
-        clearTimeout(timeoutId);
-        reject(new OCRProcessingError(`OCR failed: ${error.message}`, 'OCR_FAILED'));
-      });
-    } catch (error) {
-      clearTimeout(timeoutId);
-      reject(error);
-    }
-  });
-}
-
-// Comprehensive PDF processing with proper fallback logic
-async function extractTextFromPdfBuffer(buffer, filename) {
-  const startTime = Date.now();
   try {
-    await validateInput(buffer, filename);
-    // Attempt text extraction first
-    const pdfData = await pdfParse(buffer);
-    const extractedText = pdfData.text || '';
-    // Smart text validation instead of magic numbers
-    const hasSubstantialText = hasMeaningfulText(extractedText);
-    if (hasSubstantialText) {
-      logger.info('PDF text extraction successful', {
-        filename,
-        method: 'pdf-parse',
-        duration: Date.now() - startTime,
-        textLength: extractedText.length,
-        pages: pdfData.numpages
-      });
-      return extractedText;
+    // Validate file type and size
+    const fileType = await import('file-type').then(mod => mod.fileTypeFromBuffer(buffer));
+    if (!fileType || !CONFIG.SUPPORTED_MIME_TYPES.has(fileType.mime)) {
+      throw new Error(`Unsupported file type: ${fileType?.mime || 'unknown'}`);
     }
-    // Fallback to OCR for scanned PDFs
-    logger.info('PDF contains minimal text, attempting OCR fallback', { filename });
-    const ocrText = await ocrImageBuffer(buffer, filename);
-    // Validate OCR result
-    if (!hasMeaningfulText(ocrText)) {
-      throw new OCRProcessingError('Both text extraction and OCR failed to extract meaningful content', 'EXTRACTION_FAILED');
+    if (buffer.length > CONFIG.MAX_FILE_SIZE) {
+      throw new Error(`File too large: ${buffer.length} bytes`);
     }
-    logger.info('PDF OCR fallback successful', {
-      filename,
-      method: 'ocr',
-      duration: Date.now() - startTime,
-      textLength: ocrText.length
+
+    // Convert image buffer to base64
+    const base64Image = buffer.toString('base64');
+
+    // Set up timeout for GPT-5 API call
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('GPT-5 operation timed out')), CONFIG.OCR_TIMEOUT_MS);
     });
-    return ocrText;
+
+    // Call GPT-5 API for image analysis
+    const apiPromise = axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4-vision-preview',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'You are a syllabus analysis assistant. Please analyze this image and extract all academic information in a structured format. Focus on:\n1. Course details (name, code, professor, contact info)\n2. Assignments and due dates\n3. Course schedule and important dates\n4. Required materials\n5. Grading criteria\n\nProvide the information in a clear, structured format that can be easily parsed.'
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${fileType.mime};base64,${base64Image}`
+              }
+            }
+          ]
+        }
+      ],
+      max_tokens: 4096
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    }).catch(error => {
+      logger.error('GPT-5 API error:', { error });
+      throw new Error('Image analysis failed');
+    });
+
+    const response = await Promise.race([apiPromise, timeoutPromise]);
+
+    if (!response.data.choices || !response.data.choices[0]?.message?.content) {
+      throw new Error('Invalid response from GPT-5');
+    }
+
+    const extractedText = response.data.choices[0].message.content;
+    if (extractedText.length < CONFIG.MIN_TEXT_LENGTH) {
+      throw new Error('Extracted text too short');
+    }
+
+    return extractedText;
+
   } catch (error) {
-    logger.error('PDF processing failed', {
+    logger.error('Image analysis error:', {
+      error,
       filename,
-      error: error.message,
-      duration: Date.now() - startTime
+      fileSize: buffer.length
     });
-    if (error instanceof OCRProcessingError) throw error;
-    throw new OCRProcessingError(`PDF processing failed: ${error.message}`, 'PDF_PROCESSING_FAILED');
+    throw error;
   }
 }
 
-// Smart text validation using multiple heuristics
-function hasMeaningfulText(text) {
-  if (!text || text.trim().length < CONFIG.MIN_TEXT_LENGTH) return false;
-  
-  const cleanText = text.trim();
-  
-  // Check for common garbage PDF extraction patterns
-  const garbagePatterns = [
-    /^[\s\S]*?[�]{10,}[\s\S]*$/, // Excessive replacement characters
-    /^[^a-zA-Z0-9]{100,}$/, // Mostly non-alphanumeric characters
-  ];
-  
-  if (garbagePatterns.some(pattern => pattern.test(cleanText))) {
-    return false;
+/**
+ * Extracts text from a PDF buffer
+ * @param {Buffer} buffer - The PDF buffer to process
+ * @returns {Promise<string>} Extracted text from the PDF
+ */
+async function extractTextFromPdfBuffer(buffer) {
+  try {
+    const data = await pdfParse(buffer);
+    return data.text;
+  } catch (error) {
+    logger.error('PDF parsing error:', { error });
+    throw new Error('PDF processing failed');
   }
-  
-  // Check for reasonable word density
-  const words = cleanText.split(/\s+/).filter(word => word.length > 2);
-  const wordDensity = words.length / (cleanText.length / 100);
-  
-  return wordDensity > 5; // At least 5% of characters form meaningful words
 }
 
-export { 
-  ocrImageBuffer, 
-  extractTextFromPdfBuffer, 
-  OCRProcessingError 
-};
+export { ocrImageBuffer, extractTextFromPdfBuffer };

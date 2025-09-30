@@ -1,797 +1,1461 @@
-
+// Core dependencies
 import express from 'express';
-import dotenv from 'dotenv';
-// import cors from 'cors';
 import mongoose from 'mongoose';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import dotenv from 'dotenv';
+
+// Security and optimization
+import helmet from 'helmet';
+import cors from 'cors';
+import mongoSanitize from 'express-mongo-sanitize';
+import xss from 'xss-clean';
+import compression from 'compression';
+import rateLimit from 'express-rate-limit';
+
+// File handling
 import multer from 'multer';
-import { parseSyllabus } from './syllabusParser.js';
-import { AcademicDocumentParser } from './academicParser.js';
+
+// External services
 import axios from 'axios';
-// Removed base-64; use Buffer for base64 encoding
-import fetch from 'node-fetch';
 
-// --- Hybrid Recommendation Engine ---
+// Import models
+import Course from './models/course.js';
+import Assignment from './models/assignment.js';
+import Activity from './models/activity.js';
+import Note from './models/note.js';
+import User from './models/user.js';
+import MPesaTransaction from './models/mpesaTransaction.js';
 
-// --- Production Recommendation Algorithm ---
-class RecommendationEngine {
-  constructor() {
-    this.userSimilarityCache = new Map();
-    this.cacheTimeout = 30 * 60 * 1000; // 30 minutes
-  }
+// Import middleware
+import { catchAsync } from './middleware/errorHandler.js';
 
-  // Calculate user similarity based on course enrollment and activity patterns
-  calculateUserSimilarity(currentUserActivities, allUsersActivities) {
-    const cacheKey = JSON.stringify(currentUserActivities);
-    if (this.userSimilarityCache.has(cacheKey)) {
-      const cached = this.userSimilarityCache.get(cacheKey);
-      if (Date.now() - cached.timestamp < this.cacheTimeout) {
-        return cached.similarities;
-      }
-    }
+// Import utilities
+import { generateStudyPlan } from './utils/studyPlanGenerator.js';
 
-    const similarities = [];
-    const currentUserVector = this.buildUserVector(currentUserActivities);
-
-    allUsersActivities.forEach(otherUser => {
-      if (otherUser.supabaseId === currentUserActivities.supabaseId) return;
-
-      const otherUserVector = this.buildUserVector(otherUser);
-      const similarity = this.cosineSimilarity(currentUserVector, otherUserVector);
-      
-      if (similarity > 0.3) { // Only include meaningful similarities
-        similarities.push({
-          userId: otherUser.supabaseId,
-          similarity: similarity,
-          activities: otherUser.activities
-        });
-      }
-    });
-
-    // Sort by similarity (highest first)
-    similarities.sort((a, b) => b.similarity - a.similarity);
-    
-    this.userSimilarityCache.set(cacheKey, {
-      similarities: similarities.slice(0, 10), // Top 10 similar users
-      timestamp: Date.now()
-    });
-
-    return similarities.slice(0, 10);
-  }
-
-  buildUserVector(userData) {
-    // Create feature vector: [study_hours, assignment_completion, course_count, recent_activity]
-    const totalStudyHours = userData.activities
-      .filter(a => a.type === 'study')
-      .reduce((sum, a) => sum + (a.duration || 1), 0);
-
-    const completedAssignments = userData.assignments
-      .filter(a => a.status === 'completed').length;
-
-    const activeCourses = userData.courses.length;
-    
-    const recentActivity = userData.activities
-      .filter(a => new Date(a.date) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)).length;
-
-    return [totalStudyHours, completedAssignments, activeCourses, recentActivity];
-  }
-
-  cosineSimilarity(vecA, vecB) {
-    if (vecA.length !== vecB.length) return 0;
-    
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < vecA.length; i++) {
-      dotProduct += vecA[i] * vecB[i];
-      normA += vecA[i] * vecA[i];
-      normB += vecB[i] * vecB[i];
-    }
-
-    if (normA === 0 || normB === 0) return 0;
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-  }
-
-  // Collaborative filtering: find what similar users are doing
-  async collaborativeRecommendations(currentUserId, similarUsers, currentUserCourses) {
-    const recommendations = new Set();
-    const currentCourseNames = new Set(currentUserCourses.map(c => c.name));
-
-    similarUsers.forEach(similarUser => {
-      // Find study patterns from similar users
-      similarUser.activities.forEach(activity => {
-        if (activity.type === 'study' && 
-            !currentCourseNames.has(activity.courseName) &&
-            activity.duration > 30) { // Meaningful study sessions
-          recommendations.add(`Similar students study ${activity.courseName} for ${activity.duration} minutes`);
-        }
-      });
-
-      // Find assignment patterns
-      if (similarUser.assignments) {
-        similarUser.assignments.forEach(assignment => {
-          if (assignment.status === 'completed' && 
-              !currentCourseNames.has(assignment.courseName)) {
-            recommendations.add(`Try assignment: ${assignment.title} from ${assignment.courseName}`);
-          }
-        });
-      }
-    });
-
-    return Array.from(recommendations).slice(0, 5);
-  }
-
-  // Content-based filtering: based on user's own patterns
-  contentBasedRecommendations(userData) {
-    const recommendations = [];
-    const now = new Date();
-
-    // 1. Time-based recommendations
-    const recentActivities = userData.activities
-      .filter(a => new Date(a.date) > new Date(now - 2 * 24 * 60 * 60 * 1000))
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
-
-    // 2. Study pattern analysis
-    const studyByHour = {};
-    userData.activities.forEach(activity => {
-      if (activity.type === 'study') {
-        const hour = new Date(activity.date).getHours();
-        studyByHour[hour] = (studyByHour[hour] || 0) + 1;
-      }
-    });
-
-    // Find optimal study time
-    const bestHour = Object.keys(studyByHour)
-      .reduce((a, b) => studyByHour[a] > studyByHour[b] ? a : b, '14'); // Default to 2 PM
-
-    recommendations.push(`Your most productive time is ${bestHour}:00 - consider scheduling study sessions then`);
-
-    // 3. Assignment prioritization
-    const upcomingAssignments = userData.assignments
-      .filter(a => a.status === 'pending' && new Date(a.dueDate) > now)
-      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-
-    if (upcomingAssignments.length > 0) {
-      const urgentAssignment = upcomingAssignments[0];
-      const daysUntilDue = Math.ceil((new Date(urgentAssignment.dueDate) - now) / (1000 * 60 * 60 * 24));
-      
-      recommendations.push(`Priority: ${urgentAssignment.title} due in ${daysUntilDue} days`);
-    }
-
-    // 4. Course balance analysis
-    const courseStudyTime = {};
-    userData.activities.forEach(activity => {
-      if (activity.type === 'study' && activity.courseName) {
-        courseStudyTime[activity.courseName] = (courseStudyTime[activity.courseName] || 0) + (activity.duration || 1);
-      }
-    });
-
-    // Find least studied course
-    const courses = Object.keys(courseStudyTime);
-    if (courses.length > 1) {
-      const leastStudied = courses.reduce((a, b) => 
-        courseStudyTime[a] < courseStudyTime[b] ? a : b
-      );
-      recommendations.push(`Consider spending more time on ${leastStudied}`);
-    }
-
-    return recommendations.slice(0, 5);
-  }
-
-  // Main recommendation generator
-  async generateRecommendations(supabaseId) {
-    try {
-      // Get all user data in parallel
-      const [currentUser, allUsers, courses, assignments, activities] = await Promise.all([
-        User.findOne({ supabaseId }),
-        User.find({}),
-        Course.find({ supabaseId }),
-        Assignment.find({ supabaseId }),
-        Activity.find({ supabaseId })
-      ]);
-
-      if (!currentUser) throw new Error('User not found');
-
-      const currentUserData = {
-        supabaseId,
-        courses,
-        assignments,
-        activities,
-        user: currentUser
-      };
-
-      // Get all users' data for collaborative filtering
-      const allUsersData = await Promise.all(
-        allUsers.map(async user => ({
-          supabaseId: user.supabaseId,
-          courses: await Course.find({ supabaseId: user.supabaseId }),
-          assignments: await Assignment.find({ supabaseId: user.supabaseId }),
-          activities: await Activity.find({ supabaseId: user.supabaseId })
-        }))
-      );
-
-      // 1. Content-based recommendations (always works)
-      const contentRecs = this.contentBasedRecommendations(currentUserData);
-
-      // 2. Collaborative filtering recommendations
-      let collaborativeRecs = [];
-      try {
-        const similarUsers = this.calculateUserSimilarity(currentUserData, allUsersData);
-        collaborativeRecs = await this.collaborativeRecommendations(supabaseId, similarUsers, courses);
-      } catch (error) {
-        console.log('Collaborative filtering failed, using content-based only:', error.message);
-      }
-
-      // Combine and deduplicate recommendations
-      const allRecs = [...new Set([...contentRecs, ...collaborativeRecs])];
-      
-      return {
-        recommendations: allRecs.slice(0, 5),
-        type: collaborativeRecs.length > 0 ? 'hybrid' : 'content-based',
-        generatedAt: new Date().toISOString()
-      };
-
-    } catch (error) {
-      console.error('Recommendation engine error:', error);
-      // Fallback to simple rule-based recommendations
-      return this.getFallbackRecommendations(supabaseId);
-    }
-  }
-
-  // Simple fallback when everything else fails
-  async getFallbackRecommendations(supabaseId) {
-    const courses = await Course.find({ supabaseId });
-    const assignments = await Assignment.find({ supabaseId });
-    
-    const recommendations = [];
-    
-    if (courses.length > 0) {
-      recommendations.push(`Review your notes for ${courses[0].name}`);
-      recommendations.push('Plan your study sessions for the week ahead');
-    }
-    
-    if (assignments.length > 0) {
-      const pending = assignments.filter(a => a.status === 'pending');
-      if (pending.length > 0) {
-        recommendations.push(`Work on: ${pending[0].title}`);
-      }
-    }
-    
-    recommendations.push('Take regular breaks during study sessions');
-    recommendations.push('Stay hydrated and maintain a consistent sleep schedule');
-
-    return {
-      recommendations: recommendations.slice(0, 5),
-      type: 'fallback',
-      generatedAt: new Date().toISOString()
-    };
-  }
-}
-
-// Initialize the engine
-const recommendationEngine = new RecommendationEngine();
-
+// Load environment variables first
 dotenv.config();
+
+// Initialize express app
 const app = express();
 
-// --- CORS: Allow requests from frontend origins (including file upload preflight) ---
-const allowedOrigins = [
-  "http://localhost:8080",
-  "http://localhost:5173",
-  "https://stride-2-0.onrender.com",
-  "https://www.semesterstride.app",
-  // Add your production frontend URL if different
-];
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,apikey');
+// Connect to MongoDB
+const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/semesterstride';
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log('MongoDB connected successfully'))
+  .catch((err) => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  });
+
+// Authentication middleware
+const authenticate = catchAsync(async (req, res, next) => {
+  // Get token from header
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+
+  // Verify token
+  const user = await verifySupabaseToken(token);
+  
+  // Check if supabaseId in request matches token
+  const requestSupabaseId = req.body.supabaseId || req.query.supabaseId || req.params.supabaseId;
+  if (requestSupabaseId && requestSupabaseId !== user.id) {
+    throw new AppError('Unauthorized: supabaseId mismatch', 403);
   }
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
+
+  // Attach user to request
+  req.user = user;
   next();
 });
-app.use(express.json());
 
-// --- MongoDB connection ---
-const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/semesterstride';
-mongoose.connect(MONGODB_URI, { useNewUrlParser: true })
-  .then(() => console.log('MongoDB connected'))
-  .catch((err) => console.error('MongoDB connection error:', err));
+// Initialize middleware
+app.use(cors());
+app.use(helmet());
+app.use(compression());
+app.use(express.json({ limit: '10mb' }));
+app.use(mongoSanitize());
+app.use(xss());
 
-// --- Import models ---
-import User from './models/user.js';
-import Assignment from './models/assignment.js';
-import Course from './models/course.js';
-import Activity from './models/activity.js';
+// Study plan route handler
+app.post('/api/study-plan/generate', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.user;
+  
+  // Fetch user's courses, assignments and activities
+  const [courses, assignments, activities] = await Promise.all([
+    Course.find({ userId: supabaseId }),
+    Assignment.find({ userId: supabaseId }),
+    Activity.find({ userId: supabaseId })
+  ]);
 
-// --- AI Mindmap endpoint ---
-// --- Home route ---
-app.get('/', (req, res) => {
-  res.send('Backend API is running');
-});
-app.post('/api/mindmap', async (req, res) => {
-  try {
-    const { supabaseId } = req.body;
-    if (!supabaseId) return res.status(400).json({ error: 'Missing supabaseId' });
-    const courses = await Course.find({ supabaseId });
-    const courseNames = courses.map(c => c.name).join(', ');
-    const messages = [
-      { role: 'system', content: 'You are an expert at creating academic mindmaps.' },
-      { role: 'user', content: `Given these courses: ${courseNames}, generate a mindmap as a flat list of 5-10 key topics or concepts the student should focus on. Only return the list, no explanations.` }
-    ];
-    let topics = [];
-    try {
-      const response = await fetch(process.env.GROQ_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages })
-      });
-      const aiResult = await response.json();
-      let content = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || '';
-      topics = content.split(/\n|\r/)
-        .map(line => line.replace(/^\s*(\d+\.|\*|\u2022)\s*/, ''))
-        .map(line => line.replace(/^[\u2022\*]+/g, ''))
-        .map(line => line.trim())
-        .filter(Boolean);
-    } catch (err) {
-      console.log('Groq AI mindmap error:', err);
-    }
-    if (!topics.length && courses.length > 0) {
-      topics = courses.map(c => c.name);
-    }
-    res.json({ topics });
-  } catch (err) {
-    console.log('MINDMAP AI ERROR:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
+  // Generate personalized study plan
+  const studyPlan = await generateStudyPlan(courses, assignments, activities, req.body.preferences);
 
-const upload = multer();
-// --- Syllabus import endpoint (file upload) ---
-// Syllabus import endpoint now supports OCR for images and scanned PDFs
-app.post('/api/syllabus/import', upload.single('file'), async (req, res) => {
-  console.log('--- /api/syllabus/import called ---');
-  if (req.file) {
-    console.log('File received:', req.file.originalname, req.file.mimetype, req.file.size);
-  } else {
-    console.log('No file received');
-  }
-  try {
-    if (!req.file) {
-      console.error('No file uploaded');
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-    // Encode file as base64
-    const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
-    // Prepare GPT-5 vision/multimodal prompt
-  const prompt = `You are an expert academic assistant. Your task is to extract structured data from the attached academic document (syllabus, timetable, or assignment list).\n\nReturn a valid JSON object with these keys:\n- courses: array of objects, each with { name, code (if available), professor (if available), credits (if available), schedule (if available) }\n- assignments: array of objects, each with { title, dueDate, course (if available), type (e.g. exam, quiz, project) }\n- deadlines: array of objects, each with { title, dueDate, relatedCourse (if available) }\n\nInstructions:\n- Parse all relevant information, even if the document is noisy, scanned, or contains tables/images.\n- If information is missing, leave fields blank but include the object.\n- Use best effort to infer dates, codes, and relationships.\n- Do not include any explanation, extra text, or formatting—only the JSON object.\n- The output must be valid JSON, suitable for direct parsing in code.`;
-    const openaiPayload = {
-      model: 'gpt-5-vision',
-      messages: [
-        { role: 'system', content: 'You are an expert academic assistant.' },
-        { role: 'user', content: prompt }
-      ],
-      files: [
-        {
-          name: req.file.originalname,
-          mime_type: req.file.mimetype,
-          data: fileBase64
-        }
-      ],
-      max_tokens: 1000
-    };
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(openaiPayload)
-    });
-    const aiResult = await response.json();
-    const aiContent = aiResult.choices?.[0]?.message?.content || null;
-    let extracted;
-    try {
-      extracted = JSON.parse(aiContent);
-    } catch (e) {
-      extracted = { raw: aiContent };
-    }
-    return res.json({
-      source: 'gpt-5-vision',
-      extracted
-    });
-  } catch (err) {
-    console.error('Unexpected error in /api/syllabus/import:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// --- AI Planner endpoint ---
-app.get('/api/plan', async (req, res) => {
-  try {
-    const { userId } = req.query;
-    if (!userId) return res.status(400).json({ error: 'Missing userId' });
-    const user = await User.findOne({ supabaseId: userId });
-    const courses = await Course.find({ supabaseId: userId });
-    const assignments = await Assignment.find({ supabaseId: userId });
-    const activities = await Activity.find({ supabaseId: userId });
-    const messages = [
-      { role: 'system', content: 'You are an expert academic planner.' },
-      { role: 'user', content: `Given the following user data, generate a personalized, actionable daily study/work plan.\n\nUser: ${JSON.stringify(user)}\n\nCourses: ${JSON.stringify(courses)}\n\nAssignments: ${JSON.stringify(assignments)}\n\nRecent Activities: ${JSON.stringify(activities)}\n\nThe plan should be clear, motivating, and broken into steps. Include time blocks, priorities, and tips. Format as a numbered list.` }
-    ];
-    let plan = null;
-    try {
-      const response = await fetch(process.env.GROQ_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages })
-      });
-      const aiResult = await response.json();
-      plan = aiResult.choices?.[0]?.message?.content || aiResult.plan || aiResult.response || null;
-    } catch (err) {
-      console.log('Groq AI planner error:', err);
-    }
-    if (!plan) {
-      if (courses && courses.length > 0) {
-        plan = `Today's plan:\n- Review notes for: ${courses.map(c => c.name).join(", ")}\n- Check assignments and upcoming deadlines\n- Log your study sessions\n- Take regular breaks and stay hydrated!`;
-      } else {
-        plan = 'Add courses to get a personalized daily plan!';
-      }
-    }
-    res.json({ plan });
-  } catch (err) {
-    console.log('PLANNER AI ERROR:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-// --- Groq AI Recommendations endpoint ---
-
-// --- Home route ---
-// --- Production Ready Recommendations endpoint ---
-app.post('/api/recommendations', async (req, res) => {
-  try {
-    const { supabaseId } = req.body;
-    if (!supabaseId) {
-      return res.status(400).json({ error: 'Missing supabaseId' });
-    }
-
-    let recommendations;
-    
-    // Try AI first, then fallback to algorithmic approach
-    try {
-      // Your existing AI code first
-      const user = await User.findOne({ supabaseId });
-      const activities = await Activity.find({ supabaseId });
-      const courses = await Course.find({ supabaseId });
-
-      const recMessages = [
-        { role: 'system', content: 'You are an expert academic assistant. Generate 3-5 personalized study recommendations based on the user data. Be specific and actionable.' },
-        { role: 'user', content: `User courses: ${courses.map(c => c.name).join(', ')}. Recent activities: ${activities.slice(0, 10).map(a => `${a.type} for ${a.courseName}`).join(', ')}. Generate 3-5 specific study recommendations.` }
-      ];
-      
-      const response = await fetch(process.env.GROQ_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-          model: 'llama-3.3-70b-versatile', 
-          messages: recMessages,
-          max_tokens: 500
-        })
-      });
-      
-      const aiResult = await response.json();
-      
-      if (aiResult.choices?.[0]?.message?.content) {
-        const aiContent = aiResult.choices[0].message.content;
-        // Parse AI response into recommendations
-        const aiRecs = aiContent.split('\n')
-          .filter(line => line.trim().length > 10)
-          .map(line => line.replace(/^\d+\.\s*/, '').trim())
-          .slice(0, 5);
-        
-        if (aiRecs.length > 0) {
-          recommendations = {
-            recommendations: aiRecs,
-            type: 'ai-powered',
-            generatedAt: new Date().toISOString()
-          };
-        } else {
-          throw new Error('AI returned no valid recommendations');
-        }
-      } else {
-        throw new Error('AI response malformed');
-      }
-    } catch (aiError) {
-      console.log('AI recommendation failed, using algorithmic approach:', aiError.message);
-      // Fallback to algorithmic recommendations
-      recommendations = await recommendationEngine.generateRecommendations(supabaseId);
-    }
-
-    res.json(recommendations);
-
-  } catch (error) {
-    console.error('Recommendations endpoint error:', error);
-    // Final fallback
-    const fallback = await recommendationEngine.getFallbackRecommendations(req.body.supabaseId);
-    res.json(fallback);
-  }
-});
-
-// --- Activity routes ---
-// --- Notes CRUD endpoints ---
-// --- Assignments CRUD endpoints ---
-// Create an assignment
-app.post('/api/assignments', async (req, res) => {
-  try {
-    const assignment = new Assignment(req.body);
-    await assignment.save();
-    res.status(201).json(assignment);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Get all assignments for a user
-app.get('/api/assignments/:supabaseId', async (req, res) => {
-  try {
-    const assignments = await Assignment.find({ supabaseId: req.params.supabaseId });
-    res.json(assignments);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Update an assignment
-app.put('/api/assignments/:id', async (req, res) => {
-  try {
-    const assignment = await Assignment.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!assignment) return res.status(404).json({ error: 'Assignment not found' });
-    res.json(assignment);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Delete an assignment
-app.delete('/api/assignments/:id', async (req, res) => {
-  try {
-    const result = await Assignment.findByIdAndDelete(req.params.id);
-    if (!result) return res.status(404).json({ error: 'Assignment not found' });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-// Create a note
-app.post('/api/notes', async (req, res) => {
-  try {
-    const note = new Note(req.body);
-    await note.save();
-    res.status(201).json(note);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Get all notes for a user
-app.get('/api/notes/:supabaseId', async (req, res) => {
-  try {
-    const { supabaseId } = req.params;
-    if (!supabaseId || typeof supabaseId !== 'string' || supabaseId.length < 8) {
-      return res.status(400).json({ error: 'Invalid or missing supabaseId' });
-    }
-    const notes = await Note.find({ supabaseId });
-    res.json(notes);
-  } catch (err) {
-    console.error('Error fetching notes for user:', req.params.supabaseId, err);
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Update a note
-app.put('/api/notes/:id', async (req, res) => {
-  try {
-    const note = await Note.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!note) return res.status(404).json({ error: 'Note not found' });
-    res.json(note);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// Delete a note
-app.delete('/api/notes/:id', async (req, res) => {
-  try {
-    const result = await Note.findByIdAndDelete(req.params.id);
-    if (!result) return res.status(404).json({ error: 'Note not found' });
-    res.json({ success: true });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-// --- Get courses for a user ---
-app.get('/api/courses/:supabaseId', async (req, res) => {
-  try {
-    const courses = await Course.find({ supabaseId: req.params.supabaseId });
-    res.json(courses);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-// --- Course creation endpoint ---
-app.post('/api/courses', async (req, res) => {
-  try {
-    const { supabaseId, name } = req.body;
-    if (!supabaseId || !name) {
-      const missing = [];
-      if (!supabaseId) missing.push('supabaseId');
-      if (!name) missing.push('name');
-      return res.status(400).json({ error: `Missing required field(s): ${missing.join(', ')}` });
-    }
-    const course = new Course(req.body);
-    await course.save();
-    res.status(201).json(course);
-  } catch (err) {
-    // If it's a Mongoose validation error, include details
-    if (err.name === 'ValidationError') {
-      const errors = Object.values(err.errors).map(e => e.message);
-      return res.status(400).json({ error: 'Validation error', details: errors });
-    }
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.post('/api/activities', async (req, res) => {
-  try {
-    const activity = new Activity(req.body);
-    await activity.save();
-    res.status(201).json(activity);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-app.get('/api/activities/:supabaseId', async (req, res) => {
-  try {
-    const activities = await Activity.find({ supabaseId: req.params.supabaseId });
-    res.json(activities);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// --- Study data endpoint for charts ---
-app.get('/api/study-data/:supabaseId', async (req, res) => {
-  try {
-    const activities = await Activity.find({ supabaseId: req.params.supabaseId });
-    res.json(activities);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-
-// --- Mpesa Payment Status Store (in-memory, for demo; use DB for production) ---
-const paymentStatusStore = {};
-
-// --- Mpesa STK Push Payment Integration ---
-async function getMpesaAccessToken() {
-  const consumerKey = process.env.MPESA_CONSUMER_KEY;
-  const consumerSecret = process.env.MPESA_CONSUMER_SECRET;
-  const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
-  const url = `${process.env.MPESA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials`;
-  const res = await axios.get(url, {
-    headers: { Authorization: `Basic ${auth}` }
+  res.status(200).json({
+    status: 'success',
+    data: studyPlan
   });
-  return res.data.access_token;
+}));
+
+// Utils and helpers
+import { healthCheck } from './utils/healthCheck.js';
+import { logger } from './utils/logger.js';
+import { sanitizeRequest } from './middleware/security.js';
+
+// Get current file path and directory (ES module equivalent of __filename and __dirname)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Port configuration
+const PORT = process.env.PORT || 3000;
+
+// Import configurations
+import { env, validateEnv, isProduction } from './config/environment.js';
+import { AppError, globalErrorHandler, notFound } from './middleware/errorHandler.js';
+
+// In-memory stores for application state
+// Cache for study recommendations to reduce API calls
+// Store for tracking M-Pesa payment status during processing
+// Server instance reference for graceful shutdown
+let server;
+import { 
+  validateCourse, 
+  validateAssignment, 
+  validateNote, 
+  validateActivity, 
+  validateMpesaPayment 
+} from './middleware/validation.js';
+
+// Validate all required environment variables
+try {
+  validateEnv();
+} catch (err) {
+  logger.error('Environment validation failed:', { error: err.message });
+  process.exit(1);
 }
 
-function getTimestamp() {
-  const now = new Date();
-  const pad = (n) => n.toString().padStart(2, '0');
-  return (
-    now.getFullYear().toString() +
-    pad(now.getMonth() + 1) +
-    pad(now.getDate()) +
-    pad(now.getHours()) +
-    pad(now.getMinutes()) +
-    pad(now.getSeconds())
-  );
-}
+// Using imported globalErrorHandler for error handling middleware
 
-app.post('/api/mpesa/stkpush', async (req, res) => {
+// Security configurations
+const corsOptions = {
+  origin: (origin, callback) => {
+    const allowedOrigins = env.ALLOWED_ORIGINS?.split(',') || [
+      'http://localhost:5173',
+      'http://localhost:8080',
+      'http://localhost:3000',
+      'https://stride-2-0.vercel.app',
+      'https://www.semesterstride.app',
+      'https://semesterstride.app'
+    ];
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 600 // 10 minutes
+};
+
+// Rate limiting configurations
+
+// Auth limiter is defined later with createRateLimiter
+
+// Security middleware configuration has been moved to app.use() calls
+
+// MPesa Helper Functions
+
+
+// In-memory payment status store (replace with database in production)
+// Payment status is tracked in paymentStatusStore Map defined above
+
+// Load environment variables first
+dotenv.config();
+
+// Environment variables are validated by validateEnv() at startup
+
+// Utility to verify Supabase JWT token
+const verifySupabaseToken = async (token) => {
+  if (!token) {
+    throw new AppError('No token provided', 401);
+  }
+
   try {
-    const { phone, amount, accountReference, transactionDesc, plan } = req.body;
-    if (!phone || !amount) {
-      return res.status(400).json({ error: 'Phone and amount are required.' });
+    const response = await axios.get(`https://${env.SUPABASE_PROJECT_ID}.supabase.co/auth/v1/user`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'apikey': env.SUPABASE_SERVICE_KEY
+      }
+    });
+    return response.data;
+  } catch (error) {
+    throw new AppError('Invalid or expired token', 401);
+  }
+};
+
+// Using imported AppError and globalErrorHandler from middleware/errorHandler.js
+
+// Using imported AppError and globalErrorHandler
+
+
+
+// Data relationship validation utilities
+const validateCourseOwnership = async (courseId, supabaseId) => {
+  const course = await Course.findOne({ _id: courseId, supabaseId });
+  if (!course) {
+    throw new AppError('Course not found or unauthorized', 404);
+  }
+  return course;
+};
+
+
+
+
+// Initialize multer for file uploads
+const upload = multer({
+  dest: `${__dirname}/uploads`, // Store uploaded files in an uploads directory
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB file size limit
+  }
+});
+
+// Environment variables already configured above
+
+// Trust proxy for Vercel deployment
+app.set('trust proxy', 1);
+
+// Apply security middleware with enhanced CSP
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      connectSrc: ["'self'", 'https://api.openai.com', `https://${process.env.SUPABASE_PROJECT_ID}.supabase.co`]
     }
-    // Normalize phone number: 07xxxxxxxx or 01xxxxxxxx to 2547xxxxxxxx or 2541xxxxxxxx
-    let normalizedPhone = phone.trim();
-    if (/^0(7|1)\d{8}$/.test(normalizedPhone)) {
-      normalizedPhone = '254' + normalizedPhone.slice(1);
+  },
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+})); // Set security HTTP headers
+
+// Rate limiting middleware with Redis store for distributed systems
+const createRateLimiter = (maxRequests, windowMinutes, errorMessage) => rateLimit({
+  max: maxRequests,
+  windowMs: windowMinutes * 60 * 1000,
+  message: { status: 'error', message: errorMessage || 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'development',
+  keyGenerator: (req) => {
+    // Use both IP and user ID (if available) to prevent user-specific abuse
+    return req.user ? `${req.ip}-${req.user.id}` : req.ip;
+  }
+});
+
+// Define different rate limits for different routes
+const authLimiter = createRateLimiter(20, 15, 'Too many authentication attempts');
+const apiLimiter = createRateLimiter(100, 15, 'Too many API requests');
+const uploadLimiter = createRateLimiter(10, 15, 'Too many file uploads');
+const mpesaLimiter = createRateLimiter(5, 15, 'Too many payment attempts');
+const searchLimiter = createRateLimiter(30, 15, 'Too many search requests');
+
+// Apply limiters globally
+app.use('/api/auth', authLimiter);
+app.use('/api/syllabus/import', uploadLimiter);
+app.use('/api/payments', mpesaLimiter);
+app.use('/api/search', searchLimiter);
+app.use('/api', apiLimiter);
+
+// Rate limiting is already configured above
+
+// CSRF protection (only for browsers)
+const csrfProtection = (req, res, next) => {
+  // Skip for non-browser requests
+  if (!req.headers['user-agent']?.toLowerCase().includes('mozilla')) {
+    return next();
+  }
+
+  // Check origin header
+  const origin = req.headers.origin;
+  const allowedOrigins = ['http://localhost:5173', 'https://stride-2-0.vercel.app'];
+  
+  if (req.method !== 'GET' && (!origin || !allowedOrigins.includes(origin))) {
+    return next(new AppError('Invalid origin', 403));
+  }
+  
+  next();
+};
+
+// Apply CSRF protection to all routes
+app.use(csrfProtection);
+
+// Import security middleware
+import {
+  validateInput,
+  requestLogger,
+  timeout
+} from './middleware/security.js';
+
+// Request logging in non-production
+if (process.env.NODE_ENV !== 'production') {
+  app.use(requestLogger);
+}
+
+// Global timeout of 30 seconds
+app.use(timeout(30));
+
+// Body parsing with size limits
+app.use(express.json({ 
+  limit: '10kb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+
+// Request sanitization middleware is imported from './middleware/security.js'
+
+// Apply request sanitization middleware
+app.use(sanitizeRequest);
+
+// Security middleware has already been initialized earlier
+
+// Apply request validation middleware
+app.use((req, res, next) => {
+  // Validate request size
+  const contentLength = parseInt(req.headers['content-length'] || 0);
+  if (contentLength > 10 * 1024 * 1024) { // 10MB limit
+    return next(new AppError('Request too large', 413));
+  }
+  
+  // Validate content type for POST/PUT requests
+  if (req.method === 'POST' || req.method === 'PUT') {
+    const contentType = req.headers['content-type'];
+    if (!contentType || !contentType.includes('application/json')) {
+      return next(new AppError('Invalid content type', 415));
     }
-    // Accept already normalized numbers
-    if (!/^254(7|1)\d{8}$/.test(normalizedPhone)) {
-      return res.status(400).json({ error: 'Invalid phone number format.' });
-    }
-    const accessToken = await getMpesaAccessToken();
-    const timestamp = getTimestamp();
-    const businessShortCode = '5468788';
-    const partyB = '4953118';
-    const passkey = process.env.MPESA_PASSKEY;
-  const password = Buffer.from(businessShortCode + passkey + timestamp).toString('base64');
-    const stkUrl = `${process.env.MPESA_BASE_URL}/mpesa/stkpush/v1/processrequest`;
-    const payload = {
-      BusinessShortCode: businessShortCode,
-      Password: password,
-      Timestamp: timestamp,
-      TransactionType: 'CustomerBuyGoodsOnline',
-      Amount: amount,
-      PartyA: normalizedPhone,
-      PartyB: partyB,
-      PhoneNumber: normalizedPhone,
-      CallBackURL: process.env.MPESA_CALLBACK_URL,
-      AccountReference: accountReference || 'SemesterStride',
-      TransactionDesc: transactionDesc || 'Premium Payment'
-    };
-    console.log('--- Mpesa STK Push Attempt ---');
-    console.log('Phone:', normalizedPhone);
-    console.log('Payload:', payload);
+  }
+  
+  next();
+});
+
+// CORS configuration is handled at the top of the file
+
+app.use(cors(corsOptions));
+
+// Enable gzip compression
+app.use(compression());
+
+// Trust proxy is already set above
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    logger.info('Request completed', {
+      method: req.method,
+      url: req.url,
+      statusCode: res.statusCode,
+      duration,
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    });
+  });
+  next();
+});
+
+// Connect to MongoDB with retry logic
+const connectWithRetry = async (retries = 5, delay = 5000) => {
+  for (let i = 0; i < retries; i++) {
     try {
-      const stkRes = await axios.post(stkUrl, payload, {
-        headers: { Authorization: `Bearer ${accessToken}` }
+      await mongoose.connect(env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 5000,
+        socketTimeoutMS: 45000,
+        maxPoolSize: 10,
+        retryWrites: true,
+        w: 'majority'
       });
-      console.log('Mpesa API Response:', stkRes.data);
-      paymentStatusStore[`${normalizedPhone}_${plan}`] = { status: 'pending', timestamp: Date.now() };
-      res.json({ success: true, data: stkRes.data });
+      logger.info(`MongoDB connected successfully to ${env.MONGODB_URI.split('@')[1]}`); // Log connection without credentials
+      return;
     } catch (err) {
-      console.error('Mpesa STK Push error:', err.response?.data || err.message);
-      res.status(500).json({ error: 'Mpesa STK Push failed', details: err.response?.data || err.message });
+      logger.error(`MongoDB connection attempt ${i + 1} failed:`, { error: err });
+      if (i < retries - 1) {
+        logger.info(`Retrying MongoDB connection in ${delay/1000} seconds...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        logger.error('Failed to connect to MongoDB after multiple attempts');
+        process.exit(1);
+      }
     }
-  } catch (err) {
-    console.error('Mpesa STK Push error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Mpesa STK Push failed', details: err.response?.data || err.message });
   }
-});
+};
 
-// --- Mpesa Payment Callback Handler (for roombaya.com/callback) ---
-app.post('/api/mpesa/callback', express.json(), (req, res) => {
+connectWithRetry();
+
+// --- Syllabus import endpoint (file upload) ---
+// Syllabus import endpoint now uses GPT-5 Vision for analyzing documents
+app.post('/api/syllabus/import', authenticate, uploadLimiter, upload.single('file'), catchAsync(async (req, res) => {
+  console.log('--- /api/syllabus/import called ---');
+  
+  if (!req.file) {
+    throw new AppError('No file uploaded', 400);
+  }
+
+  // Validate file size
+  const maxSize = 10 * 1024 * 1024; // 10MB
+  if (req.file.size > maxSize) {
+    throw new AppError('File too large. Maximum size is 10MB', 400);
+  }
+  
+  logger.info('File received:', { filename: req.file.originalname, mimetype: req.file.mimetype, size: req.file.size });
+  
+  // Validate file type
+  const allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png'];
+  if (!allowedMimeTypes.includes(req.file.mimetype)) {
+    throw new AppError('Invalid file type. Only PDF, JPEG, and PNG files are allowed.', 400);
+  }
+  
+  // Encode file as base64
+  const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
+
+  // Call GPT-5 API for syllabus analysis
+  const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+    model: 'gpt-4-vision-preview',
+    max_tokens: 4096,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'You are an expert academic assistant. Analyze this document and extract all academic information in JSON format. Include:\n\n1. Course details (name, code, professor)\n2. Assignments with due dates\n3. Important deadlines\n4. Required materials\n\nReturn ONLY a JSON object with no additional text.'
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:${req.file.mimetype};base64,${fileBase64}`
+            }
+          }
+        ]
+      }
+    ]
+  }, {
+    headers: {
+      'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  });
+
+  if (!response.data.choices || !response.data.choices[0]?.message?.content) {
+    throw new AppError('Invalid response from GPT-5', 500);
+  }
+
   try {
-    const { phone, plan, status } = req.body;
-    if (phone && plan && status === 'success') {
-      paymentStatusStore[`${phone}_${plan}`] = { status: 'confirmed', timestamp: Date.now() };
-    }
-    res.json({ received: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    // Parse the extracted text as JSON
+    const extractedData = JSON.parse(response.data.choices[0].message.content);
+    res.status(200).json({
+      status: 'success',
+      data: {
+        source: 'gpt-5-vision',
+        extracted: extractedData
+      }
+    });
+  } catch (parseError) {
+    throw new AppError('Failed to parse syllabus data as JSON', 500);
   }
-});
+}));
 
-// --- Payment Status Polling Endpoint ---
-app.get('/api/mpesa/status', (req, res) => {
+// Error handling is applied at the end of the file
+
+// User routes
+app.post('/api/users', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId, email } = req.body;
+  
+  if (!supabaseId) {
+    throw new AppError('Missing supabaseId', 400);
+  }
+  
+  // Check if user already exists
+  const existingUser = await User.findOne({ supabaseId });
+  if (existingUser) {
+    throw new AppError('User already exists', 409);
+  }
+  
+  const user = await User.create({
+    supabaseId,
+    email,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  });
+  
+  res.status(201).json({
+    status: 'success',
+    data: { user }
+  });
+}));
+
+app.get('/api/users/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  
+  if (!supabaseId || typeof supabaseId !== 'string' || supabaseId.length < 8) {
+    throw new AppError('Invalid supabaseId', 400);
+  }
+  
+  const user = await User.findOne({ supabaseId });
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+  
+  res.status(200).json({
+    status: 'success',
+    data: { user }
+  });
+}));
+
+// Course routes
+app.post('/api/courses', authenticate, validateCourse, catchAsync(async (req, res) => {
+  logger.info('Creating new course', { userId: req.user.supabaseId });
+  const { supabaseId, name, code, instructor } = req.body;
+  
+  if (!supabaseId || !name) {
+    throw new AppError('Missing required fields: supabaseId and name', 400);
+  }
+  
+  // Validate if user exists
+  const user = await User.findOne({ supabaseId });
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+  
+  const course = await Course.create({
+    supabaseId,
+    name,
+    code,
+    instructor,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  });
+  
+  res.status(201).json({
+    status: 'success',
+    data: { course }
+  });
+}));
+
+app.get('/api/courses/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  
+  if (!supabaseId || typeof supabaseId !== 'string' || supabaseId.length < 8) {
+    throw new AppError('Invalid supabaseId', 400);
+  }
+  
+  // Verify user is requesting their own data
+  if (supabaseId !== req.user.id) {
+    throw new AppError('Unauthorized: Cannot access other users\' data', 403);
+  }
+  
+  const courses = await Course.find({ supabaseId }).sort({ createdAt: -1 });
+  
+  res.status(200).json({
+    status: 'success',
+    results: courses.length,
+    data: { courses }
+  });
+}));
+
+app.put('/api/courses/:id', authenticate, catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  
+  // Validate course exists
+  const course = await Course.findById(id);
+  if (!course) {
+    throw new AppError('Course not found', 404);
+  }
+  
+  // Validate user owns the course
+  if (updates.supabaseId && updates.supabaseId !== course.supabaseId) {
+    throw new AppError('Unauthorized: Cannot change course ownership', 403);
+  }
+  
+  const updatedCourse = await Course.findByIdAndUpdate(
+    id,
+    { ...updates, updatedAt: new Date() },
+    { new: true, runValidators: true }
+  );
+  
+  res.status(200).json({
+    status: 'success',
+    data: { course: updatedCourse }
+  });
+}));
+
+app.delete('/api/courses/:id', authenticate, catchAsync(async (req, res) => {
+  logger.info('Deleting course', { courseId: req.params.id, userId: req.user.supabaseId });
+  const { id } = req.params;
+  const { supabaseId } = req.query;
+  
+  if (!supabaseId) {
+    throw new AppError('Missing supabaseId', 400);
+  }
+  
+  // Validate course exists and user owns it
+  const course = await Course.findOne({ _id: id, supabaseId });
+  if (!course) {
+    throw new AppError('Course not found or unauthorized', 404);
+  }
+  
+  await Course.findByIdAndDelete(id);
+  
+  res.status(200).json({
+    status: 'success',
+    message: 'Course deleted successfully'
+  });
+}));
+
+// Assignment routes
+app.post('/api/assignments', authenticate, validateAssignment, catchAsync(async (req, res) => {
+  logger.info('Creating new assignment', { userId: req.user.supabaseId });
+  const { supabaseId, title, dueDate, course, description } = req.body;
+  
+  if (!supabaseId || !title) {
+    throw new AppError('Missing required fields: supabaseId and title', 400);
+  }
+  
+  // Validate if user exists
+  const user = await User.findOne({ supabaseId });
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+  
+  // Validate dueDate if provided
+  if (dueDate && new Date(dueDate).toString() === 'Invalid Date') {
+    throw new AppError('Invalid due date format', 400);
+  }
+  
+  // Validate course if provided
+  if (course) {
+    const courseExists = await Course.findOne({ _id: course, supabaseId });
+    if (!courseExists) {
+      throw new AppError('Course not found', 404);
+    }
+  }
+  
+  const assignment = await Assignment.create({
+    supabaseId,
+    title,
+    dueDate,
+    course,
+    description,
+    progress: 0,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  });
+  
+  res.status(201).json({
+    status: 'success',
+    data: { assignment }
+  });
+}));
+
+app.get('/api/assignments/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  const { course, status } = req.query;
+  
+  if (!supabaseId || typeof supabaseId !== 'string' || supabaseId.length < 8) {
+    throw new AppError('Invalid supabaseId', 400);
+  }
+  
+  // Verify user is requesting their own data
+  if (supabaseId !== req.user.id) {
+    throw new AppError('Unauthorized: Cannot access other users\' data', 403);
+  }
+  
+  // Build query
+  const query = { supabaseId };
+  if (course) {
+    // Verify course belongs to user
+    await validateCourseOwnership(course, supabaseId);
+    query.course = course;
+  }
+  if (status === 'completed') query.progress = 100;
+  if (status === 'pending') query.progress = { $lt: 100 };
+  
+  const assignments = await Assignment.find(query)
+    .sort({ dueDate: 1, createdAt: -1 })
+    .populate('course', 'name');
+  
+  res.status(200).json({
+    status: 'success',
+    results: assignments.length,
+    data: { assignments }
+  });
+}));
+
+app.put('/api/assignments/:id', authenticate, catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  
+  // Validate assignment exists
+  const assignment = await Assignment.findById(id);
+  if (!assignment) {
+    throw new AppError('Assignment not found', 404);
+  }
+  
+  // Validate user owns the assignment
+  if (updates.supabaseId && updates.supabaseId !== assignment.supabaseId) {
+    throw new AppError('Unauthorized: Cannot change assignment ownership', 403);
+  }
+  
+  // Validate date if provided
+  if (updates.dueDate && new Date(updates.dueDate).toString() === 'Invalid Date') {
+    throw new AppError('Invalid due date format', 400);
+  }
+  
+  const updatedAssignment = await Assignment.findByIdAndUpdate(
+    id,
+    { ...updates, updatedAt: new Date() },
+    { new: true, runValidators: true }
+  );
+  
+  res.status(200).json({
+    status: 'success',
+    data: { assignment: updatedAssignment }
+  });
+}));
+
+app.delete('/api/assignments/:id', authenticate, catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { supabaseId } = req.query;
+  
+  if (!supabaseId) {
+    throw new AppError('Missing supabaseId', 400);
+  }
+  
+  // Validate assignment exists and user owns it
+  const assignment = await Assignment.findOne({ _id: id, supabaseId });
+  if (!assignment) {
+    throw new AppError('Assignment not found or unauthorized', 404);
+  }
+  
+  await Assignment.findByIdAndDelete(id);
+  
+  res.status(200).json({
+    status: 'success',
+    message: 'Assignment deleted successfully'
+  });
+}));
+
+// Note routes
+app.post('/api/notes', authenticate, validateNote, catchAsync(async (req, res) => {
+  const { supabaseId, title, content, tags = [], course } = req.body;
+  
+  if (!supabaseId || !content) {
+    throw new AppError('Missing required fields: supabaseId and content', 400);
+  }
+  
+  // Validate if user exists
+  const user = await User.findOne({ supabaseId });
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+  
+  // Validate course if provided
+  if (course) {
+    const courseExists = await Course.findOne({ _id: course, supabaseId });
+    if (!courseExists) {
+      throw new AppError('Course not found', 404);
+    }
+  }
+  
+  // Validate tags
+  if (!Array.isArray(tags)) {
+    throw new AppError('Tags must be an array', 400);
+  }
+  
+  const note = await Note.create({
+    supabaseId,
+    title: title || 'Untitled',
+    content,
+    tags,
+    course,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  });
+  
+  res.status(201).json({
+    status: 'success',
+    data: { note }
+  });
+}));
+
+app.get('/api/notes/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  const { course, tag } = req.query;
+  
+  if (!supabaseId || typeof supabaseId !== 'string' || supabaseId.length < 8) {
+    throw new AppError('Invalid supabaseId', 400);
+  }
+  
+  // Build query
+  const query = { supabaseId };
+  if (course) query.course = course;
+  if (tag) query.tags = tag;
+  
+  const notes = await Note.find(query)
+    .sort({ updatedAt: -1 })
+    .populate('course', 'name');
+  
+  res.status(200).json({
+    status: 'success',
+    results: notes.length,
+    data: { notes }
+  });
+}));
+
+app.put('/api/notes/:id', authenticate, catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  
+  // Validate note exists
+  const note = await Note.findById(id);
+  if (!note) {
+    throw new AppError('Note not found', 404);
+  }
+  
+  // Validate user owns the note
+  if (updates.supabaseId && updates.supabaseId !== note.supabaseId) {
+    throw new AppError('Unauthorized: Cannot change note ownership', 403);
+  }
+  
+  // Validate tags if provided
+  if (updates.tags && !Array.isArray(updates.tags)) {
+    throw new AppError('Tags must be an array', 400);
+  }
+  
+  // Validate course if provided
+  if (updates.course) {
+    const courseExists = await Course.findOne({ _id: updates.course, supabaseId: note.supabaseId });
+    if (!courseExists) {
+      throw new AppError('Course not found', 404);
+    }
+  }
+  
+  const updatedNote = await Note.findByIdAndUpdate(
+    id,
+    { ...updates, updatedAt: new Date() },
+    { new: true, runValidators: true }
+  );
+  
+  res.status(200).json({
+    status: 'success',
+    data: { note: updatedNote }
+  });
+}));
+
+app.delete('/api/notes/:id', authenticate, catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { supabaseId } = req.query;
+  
+  if (!supabaseId) {
+    throw new AppError('Missing supabaseId', 400);
+  }
+  
+  // Validate note exists and user owns it
+  const note = await Note.findOne({ _id: id, supabaseId });
+  if (!note) {
+    throw new AppError('Note not found or unauthorized', 404);
+  }
+  
+  await Note.findByIdAndDelete(id);
+  
+  res.status(200).json({
+    status: 'success',
+    message: 'Note deleted successfully'
+  });
+}));
+
+// Recommendations endpoint
+app.post('/api/recommendations', authenticate, catchAsync(async (req, res) => {
+  logger.info('Generating recommendations', { userId: req.body.supabaseId });
+  const { supabaseId } = req.body;
+  
+  if (!supabaseId) {
+    throw new AppError('Missing supabaseId', 400);
+  }
+  
+  // Get user's courses
+  const courses = await Course.find({ supabaseId });
+  if (!courses.length) {
+    return res.status(200).json({
+      status: 'success',
+      data: {
+        recommendations: ['Add courses to get personalized recommendations.']
+      }
+    });
+  }
+  
+  // Get user's study activities
+  const activities = await Activity.find({
+    supabaseId,
+    type: 'study_session',
+    timestamp: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // Last 30 days
+  });
+  
+  // Get assignments
+  const assignments = await Assignment.find({ supabaseId, dueDate: { $exists: true } });
+  
+  // Generate recommendations based on study patterns and upcoming assignments
+  const recommendations = [];
+  
+  // Check for courses without recent study sessions
+  const coursesWithoutStudy = courses.filter(course => 
+    !activities.some(activity => activity.course?.toString() === course._id.toString())
+  );
+  if (coursesWithoutStudy.length) {
+    recommendations.push(`Consider studying ${coursesWithoutStudy.map(c => c.name).join(', ')} - no recent study sessions recorded.`);
+  }
+  
+  // Check for upcoming assignments
+  const upcomingAssignments = assignments.filter(a => 
+    new Date(a.dueDate) > new Date() && 
+    new Date(a.dueDate) <= new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  );
+  if (upcomingAssignments.length) {
+    recommendations.push(`You have ${upcomingAssignments.length} assignments due in the next week. Plan your study time accordingly.`);
+  }
+  
+  // Add general recommendations
+  if (!activities.length) {
+    recommendations.push('Start logging your study sessions to get personalized study recommendations.');
+  }
+  
+  res.status(200).json({
+    status: 'success',
+    data: {
+      recommendations: recommendations.length ? recommendations : ['Keep up the good work! No specific recommendations at this time.']
+    }
+  });
+}));
+
+// Activity routes
+app.post('/api/activities', authenticate, validateActivity, catchAsync(async (req, res) => {
+  logger.info('Recording new activity', { userId: req.user.supabaseId, type: req.body.type });
+  const { supabaseId, type, courseName, details, duration } = req.body;
+  
+  if (!supabaseId || !type) {
+    throw new AppError('Missing required fields: supabaseId and type', 400);
+  }
+  
+  // Validate activity type
+  const validTypes = ['study_session', 'note_add', 'assignment_add', 'course_add'];
+  if (!validTypes.includes(type)) {
+    throw new AppError('Invalid activity type', 400);
+  }
+  
+  // Validate course name if provided
+  let course = null;
+  if (courseName) {
+    course = await Course.findOne({ supabaseId, name: courseName });
+    if (!course) {
+      throw new AppError('Course not found', 404);
+    }
+  }
+  
+  const activity = await Activity.create({
+    supabaseId,
+    type,
+    course: course?._id,
+    details,
+    duration,
+    timestamp: new Date(),
+    createdAt: new Date(),
+    updatedAt: new Date()
+  });
+  
+  res.status(201).json({
+    status: 'success',
+    data: { activity }
+  });
+}));
+
+// Get activities
+// Activities route is defined later in the file
+
+app.get('/api/activities/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  const { type, startDate, endDate, course } = req.query;
+  
+  if (!supabaseId || typeof supabaseId !== 'string' || supabaseId.length < 8) {
+    throw new AppError('Invalid supabaseId', 400);
+  }
+  
+  // Build query
+  const query = { supabaseId };
+  if (type) query.type = type;
+  if (course) query.course = course;
+  
+  // Date range filter
+  if (startDate || endDate) {
+    query.timestamp = {};
+    if (startDate) query.timestamp.$gte = new Date(startDate);
+    if (endDate) query.timestamp.$lte = new Date(endDate);
+  }
+  
+  const activities = await Activity.find(query)
+    .sort({ timestamp: -1 })
+    .limit(100)
+    .populate('course', 'name');
+  
+  // Format activities for frontend
+  const formattedActivities = activities.map(activity => ({
+    id: activity._id,
+    title: activity.type === 'study_session' ? `Study: ${activity.course?.name || 'General'}` : activity.details,
+    startsAt: activity.timestamp,
+    endsAt: activity.type === 'study_session' ? 
+      new Date(new Date(activity.timestamp).getTime() + (activity.duration || 0) * 60000).toISOString() :
+      activity.timestamp,
+    type: activity.type,
+    course: activity.course,
+    details: activity.details,
+    duration: activity.duration
+  }));
+  
+  res.status(200).json({
+    status: 'success',
+    results: formattedActivities.length,
+    data: formattedActivities
+  });
+}));
+
+app.put('/api/activities/:id', authenticate, catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+  
+  // Validate activity exists
+  const activity = await Activity.findById(id);
+  if (!activity) {
+    throw new AppError('Activity not found', 404);
+  }
+  
+  // Validate user owns the activity
+  if (updates.supabaseId && updates.supabaseId !== activity.supabaseId) {
+    throw new AppError('Unauthorized: Cannot change activity ownership', 403);
+  }
+  
+  // Validate course if provided
+  if (updates.course) {
+    const courseExists = await Course.findOne({ _id: updates.course, supabaseId: activity.supabaseId });
+    if (!courseExists) {
+      throw new AppError('Course not found', 404);
+    }
+  }
+  
+  // Validate duration if provided
+  if (updates.duration !== undefined && updates.duration < 0) {
+    throw new AppError('Duration cannot be negative', 400);
+  }
+  
+  const updatedActivity = await Activity.findByIdAndUpdate(
+    id,
+    { ...updates, updatedAt: new Date() },
+    { new: true, runValidators: true }
+  );
+  
+  res.status(200).json({
+    status: 'success',
+    data: { activity: updatedActivity }
+  });
+}));
+
+app.delete('/api/activities/:id', authenticate, catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { supabaseId } = req.query;
+  
+  if (!supabaseId) {
+    throw new AppError('Missing supabaseId', 400);
+  }
+  
+  // Validate activity exists and user owns it
+  const activity = await Activity.findOne({ _id: id, supabaseId });
+  if (!activity) {
+    throw new AppError('Activity not found or unauthorized', 404);
+  }
+  
+  await Activity.findByIdAndDelete(id);
+  
+  res.status(200).json({
+    status: 'success',
+    message: 'Activity deleted successfully'
+  });
+}));
+
+// Mindmap endpoint to get course relationships and connections
+app.get('/api/mindmap', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.user;
+  if (!supabaseId) {
+    throw new AppError('User ID is required', 400);
+  }
+
+  // Get user's courses
+  const courses = await Course.find({ supabaseId });
+  
+  // Get all assignments to analyze relationships
+  const assignments = await Assignment.find({ supabaseId });
+  
+  // Get all notes to analyze relationships
+  const notes = await Note.find({ supabaseId });
+
+  // Create nodes for each course
+  const nodes = courses.map(course => ({
+    id: course._id.toString(),
+    label: course.name,
+    type: 'course',
+    data: {
+      code: course.code,
+      description: course.description,
+      credits: course.credits
+    }
+  }));
+
+  // Create edges based on related assignments and notes
+  const edges = [];
+  
+  // Add edges between courses that share similar topics or have related assignments
+  courses.forEach((course1, i) => {
+    courses.slice(i + 1).forEach(course2 => {
+      // Check for related assignments
+      const relatedAssignments = assignments.filter(assignment =>
+        assignment.relatedCourses?.includes(course1._id) &&
+        assignment.relatedCourses?.includes(course2._id)
+      );
+
+      // Check for related notes
+      const relatedNotes = notes.filter(note =>
+        note.relatedCourses?.includes(course1._id) &&
+        note.relatedCourses?.includes(course2._id)
+      );
+
+      if (relatedAssignments.length > 0 || relatedNotes.length > 0) {
+        edges.push({
+          source: course1._id.toString(),
+          target: course2._id.toString(),
+          label: `${relatedAssignments.length} shared assignments, ${relatedNotes.length} shared notes`,
+          weight: relatedAssignments.length + relatedNotes.length
+        });
+      }
+    });
+  });
+
+  res.json({ nodes, edges });
+}));
+
+// M-Pesa STK Push endpoint
+app.post('/api/mpesa/stkpush', authenticate, validateMpesaPayment, catchAsync(async (req, res) => {
+  const { phone, amount, plan } = req.body;
+  const { supabaseId } = req.user;
+
+  // Format phone number to required format (254XXXXXXXXX)
+  const formattedPhone = phone.replace(/^(?:\+?254|0)/, '254');
+
+  try {
+    // Generate timestamp
+    const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, -3);
+    const shortcode = env.MPESA_SHORTCODE;
+    const passkey = env.MPESA_PASSKEY;
+
+    // Generate password
+    const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
+
+    // Make request to M-Pesa API
+    const response = await axios.post(
+      'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest',
+      {
+        BusinessShortCode: shortcode,
+        Password: password,
+        Timestamp: timestamp,
+        TransactionType: 'CustomerPayBillOnline',
+        Amount: amount,
+        PartyA: formattedPhone,
+        PartyB: shortcode,
+        PhoneNumber: formattedPhone,
+        CallBackURL: `${env.API_URL}/api/mpesa/callback`,
+        AccountReference: `SemesterStride-${plan}`,
+        TransactionDesc: `SemesterStride ${plan} Plan`
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${env.MPESA_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    // Save transaction details to database
+    const transaction = new MPesaTransaction({
+      supabaseId,
+      phone: formattedPhone,
+      amount,
+      plan,
+      checkoutRequestId: response.data.CheckoutRequestID,
+      merchantRequestId: response.data.MerchantRequestID,
+      status: 'pending'
+    });
+    await transaction.save();
+
+    res.json({
+      success: true,
+      checkoutRequestId: response.data.CheckoutRequestID
+    });
+  } catch (error) {
+    logger.error('M-Pesa API Error:', { error: error.response?.data || error.message });
+    throw new AppError('Failed to initiate payment', 500);
+  }
+}));
+
+// M-Pesa status check endpoint
+app.get('/api/mpesa/status', authenticate, catchAsync(async (req, res) => {
   const { phone, plan } = req.query;
-  if (!phone || !plan) return res.status(400).json({ error: 'Missing phone or plan' });
-  const key = `${phone}_${plan}`;
-  const status = paymentStatusStore[key]?.status || 'pending';
-  res.json({ status });
+  const { supabaseId } = req.user;
+  
+  if (!phone || !plan) {
+    throw new AppError('Phone and plan are required', 400);
+  }
+  
+  // Validate phone number format (Kenyan format)
+  const phoneRegex = /^(?:254|\+254|0)?((?:7|1)[0-9]{8})$/;
+  if (!phoneRegex.test(phone)) {
+    throw new AppError('Invalid phone number format', 400);
+  }
+
+  // Format phone number
+  const formattedPhone = phone.replace(/^(?:\+?254|0)/, '254');
+
+  // Find latest transaction for this user, phone and plan
+  const transaction = await MPesaTransaction.findOne({
+    supabaseId,
+    phone: formattedPhone,
+    plan
+  }).sort({ createdAt: -1 });
+
+  if (!transaction) {
+    throw new AppError('No transaction found', 404);
+  }
+
+  res.json({
+    success: true,
+    status: transaction.status,
+    transactionId: transaction.transactionId,
+    completedAt: transaction.completedAt
+  });
+}));
+
+// Study planning endpoint
+app.get('/api/plan', authenticate, catchAsync(async (req, res) => {
+  const { userId } = req.query;
+  
+  if (!userId) {
+    throw new AppError('Missing userId', 400);
+  }
+
+  // Get user's courses, assignments and activities
+  const courses = await Course.find({ supabaseId: userId });
+  const assignments = await Assignment.find({ 
+    supabaseId: userId,
+    dueDate: { $exists: true }
+  });
+  
+  // Get recent study activities - last 7 days
+  const activities = await Activity.find({
+    supabaseId: userId,
+    type: 'study_session',
+    timestamp: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+  }).sort({ timestamp: -1 });
+
+  // Generate personalized study plan
+  const plan = await generateStudyPlan(courses, assignments, activities);
+
+  res.status(200).json({
+    status: 'success',
+    data: { plan }
+  });
+}));
+
+
+
+// M-Pesa routes moved to a more robust implementation with validation above
+// Health check endpoint
+app.get('/health', catchAsync(async (req, res) => {
+  const health = await healthCheck();
+  const statusCode = health.healthy ? 200 : 503;
+  
+  res.status(statusCode).json(health);
+}));
+
+// Study data endpoint
+app.get('/api/study-data/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  const { startDate, endDate } = req.query;
+
+  // Build date range query
+  const dateQuery = {};
+  if (startDate) dateQuery.$gte = new Date(startDate);
+  if (endDate) dateQuery.$lte = new Date(endDate);
+
+  // Get study sessions
+  const studySessions = await Activity.find({
+    supabaseId,
+    type: 'study_session',
+    ...(Object.keys(dateQuery).length && { timestamp: dateQuery })
+  }).populate('course', 'name');
+
+  // Aggregate study time by course
+  const studyData = studySessions.reduce((acc, session) => {
+    const courseName = session.course?.name || 'General';
+    if (!acc[courseName]) {
+      acc[courseName] = {
+        totalMinutes: 0,
+        sessions: 0
+      };
+    }
+    acc[courseName].totalMinutes += session.duration || 0;
+    acc[courseName].sessions += 1;
+    return acc;
+  }, {});
+
+  res.status(200).json({
+    status: 'success',
+    data: studyData
+  });
+}));
+
+// Analytics endpoints
+app.get('/api/analytics/study-time/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  const { startDate, endDate } = req.query;
+  
+  // Build date range
+  const dateQuery = {};
+if (startDate) dateQuery.$gte = new Date(startDate);
+if (endDate) dateQuery.$lte = new Date(endDate);  // Get study sessions
+  const studySessions = await Activity.find({
+    supabaseId,
+    type: 'study_session',
+    ...(Object.keys(dateQuery).length && { timestamp: dateQuery })
+  }).populate('course', 'name');
+  
+  // Aggregate study time by course
+  const studyTimeByCourse = studySessions.reduce((acc, session) => {
+    const courseName = session.course?.name || 'General';
+    if (!acc[courseName]) {
+      acc[courseName] = {
+        totalMinutes: 0,
+        sessions: 0
+      };
+    }
+    acc[courseName].totalMinutes += session.duration || 0;
+    acc[courseName].sessions += 1;
+    return acc;
+  }, {});
+
+  res.status(200).json({
+    status: 'success',
+    data: studyTimeByCourse
+  });
+}));
+
+app.get('/api/analytics/progress/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  
+  // Get all assignments
+  const assignments = await Assignment.find({ supabaseId }).populate('course', 'name');
+  
+  // Get study sessions from last 30 days
+  const recentStudySessions = await Activity.find({
+    supabaseId,
+    type: 'study_session',
+    timestamp: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+  }).populate('course', 'name');
+  
+  // Calculate analytics
+  const analytics = {
+    totalAssignments: assignments.length,
+    completedAssignments: assignments.filter(a => a.progress === 100).length,
+    upcomingAssignments: assignments.filter(a => 
+      new Date(a.dueDate) > new Date() && 
+      new Date(a.dueDate) <= new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    ).length,
+    totalStudyTimeLastMonth: recentStudySessions.reduce((sum, session) => sum + (session.duration || 0), 0),
+    averageStudyTimePerDay: Math.round(
+      recentStudySessions.reduce((sum, session) => sum + (session.duration || 0), 0) / 30
+    )
+  };
+  
+  res.status(200).json({
+    status: 'success',
+    data: analytics
+  });
+}));
+
+// 404 handler for undefined routes
+app.all('*', (req, res, next) => {
+  next(new AppError(`Can't find ${req.originalUrl} on this server`, 404));
 });
 
-// --- Start server ---
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Handle 404 errors for undefined routes - after all routes but before error handler
+app.use(notFound);
+
+// Apply global error handler - must be last middleware
+app.use(globalErrorHandler);
+
+// Function to handle graceful shutdown
+const gracefulShutdown = () => {
+  logger.info('Starting graceful shutdown...');
+  server.close(() => {
+    logger.info('Server closed. Disconnecting from MongoDB...');
+    mongoose.connection.close(false)
+      .then(() => {
+        logger.info('MongoDB connection closed.');
+        process.exit(0);
+      })
+      .catch(err => {
+        logger.error('Error during MongoDB disconnect:', { error: err });
+        process.exit(1);
+      });
+  });
+
+  // Force shutdown after 10 seconds if graceful shutdown fails
+  setTimeout(() => {
+    logger.error('Could not close connections in time, forcefully shutting down');
+    process.exit(1);
+  }, 10000);
+};
+
+// Error handling is consolidated at the end of the file
+
+// Start server
+server = app.listen(PORT, () => {
+  logger.info(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  logger.error('UNCAUGHT EXCEPTION! 💥 Shutting down...', { error: err });
+  gracefulShutdown();
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (err) => {
+  logger.error('UNHANDLED REJECTION! 💥 Shutting down...', { error: err });
+  gracefulShutdown();
+});
+
+// Handle SIGTERM
+process.on('SIGTERM', () => {
+  logger.info('👋 SIGTERM RECEIVED. Shutting down gracefully');
+  gracefulShutdown();
 });
