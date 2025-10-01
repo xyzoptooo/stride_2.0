@@ -3,17 +3,34 @@ import Course from '../models/course.js';
 
 const router = express.Router();
 
+import { logger } from '../utils/logger.js';
+import { AppError } from '../middleware/errorHandler.js';
+
 // Get all courses for a user
 router.get('/', async (req, res, next) => {
   try {
     const { user_id } = req.query;
+    
+    logger.info('Fetching courses', { user_id, path: req.path });
+    
     if (!user_id) {
-      return res.status(400).json({ message: 'User ID is required' });
+      throw new AppError('User ID is required', 400);
     }
     
     const courses = await Course.find({ supabaseId: user_id });
-    res.json(courses);
+    
+    // Set explicit content type
+    res.setHeader('Content-Type', 'application/json');
+    res.json({
+      status: 'success',
+      data: courses
+    });
   } catch (error) {
+    logger.error('Error fetching courses', {
+      error: error.message,
+      user_id: req.query.user_id,
+      path: req.path
+    });
     next(error);
   }
 });
@@ -23,8 +40,10 @@ router.post('/', async (req, res, next) => {
   try {
     const { supabaseId, name, professor, credits, schedule } = req.body;
     
+    logger.info('Creating new course', { supabaseId, name });
+    
     if (!supabaseId || !name) {
-      return res.status(400).json({ message: 'User ID and course name are required' });
+      throw new AppError('User ID and course name are required', 400);
     }
     
     const course = new Course({
@@ -37,8 +56,20 @@ router.post('/', async (req, res, next) => {
     });
     
     const savedCourse = await course.save();
-    res.status(201).json(savedCourse);
+    
+    // Set explicit content type
+    res.setHeader('Content-Type', 'application/json');
+    res.status(201).json({
+      status: 'success',
+      data: savedCourse
+    });
   } catch (error) {
+    logger.error('Error creating course', {
+      error: error.message,
+      supabaseId: req.body.supabaseId,
+      name: req.body.name,
+      path: req.path
+    });
     next(error);
   }
 });

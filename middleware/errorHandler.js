@@ -14,6 +14,14 @@ export class AppError extends Error {
 
 // Global error handler
 export const globalErrorHandler = (err, req, res, next) => {
+  // Ensure res.headersSent is checked first
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  // Set response type to JSON
+  res.setHeader('Content-Type', 'application/json');
+
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
 
@@ -22,7 +30,8 @@ export const globalErrorHandler = (err, req, res, next) => {
       status: err.status,
       error: err,
       message: err.message,
-      stack: err.stack
+      stack: err.stack,
+      path: req.path
     });
   }
 
@@ -30,7 +39,8 @@ export const globalErrorHandler = (err, req, res, next) => {
   if (err.isOperational) {
     return res.status(err.statusCode).json({
       status: err.status,
-      message: err.message
+      message: err.message,
+      path: req.path
     });
   }
 
@@ -44,7 +54,7 @@ export const globalErrorHandler = (err, req, res, next) => {
     user: req.user?.supabaseId
   });
   
-  // Send generic error message
+  // Send generic error message as JSON
   res.status(500).json({
     status: 'error',
     message: 'Something went wrong!'
