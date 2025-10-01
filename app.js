@@ -48,6 +48,33 @@ const corsOptions = {
   maxAge: 600 // 10 minutes
 };
 
+// Ensure the response sets Access-Control-Allow-Origin to the requesting origin when allowed
+// This avoids returning '*' when credentials are required by the browser
+app.use((req, res, next) => {
+  const originHeader = req.headers.origin;
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'https://stride-2-0.onrender.com',
+    'https://www.semesterstride.app',
+    'https://semesterstride.app'
+  ];
+
+  if (originHeader && allowedOrigins.includes(originHeader)) {
+    res.setHeader('Access-Control-Allow-Origin', originHeader);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  }
+
+  // Handle preflight requests quickly
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
+  next();
+});
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: env.rateLimitWindow,
