@@ -12,6 +12,8 @@ export const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
   'https://stride-2-0.onrender.com',
+  'https://www.semesterstride.app',
+  'https://semesterstride.app',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -91,6 +93,8 @@ export const env = {
   allowedOrigins: process.env.ALLOWED_ORIGINS?.split(',') || [
     'http://localhost:5173',
     'http://localhost:8080',
-    'http://localhost:3000'
+    'http://localhost:3000',
+    'https://semester-stride-planner.vercel.app',
+    'https://semester-stride-planner-git-main-eva254-ke.vercel.app'
   ]
 };

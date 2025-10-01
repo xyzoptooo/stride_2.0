@@ -21,7 +21,20 @@ const app = express();
 // Configure security middleware
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || env.allowedOrigins.includes(origin)) {
+    // Allow requests with no origin (like mobile apps, curl, etc.)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'https://stride-2-0.onrender.com',
+      'https://www.semesterstride.app',
+      'https://semesterstride.app'
+    ];
+
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
