@@ -567,24 +567,23 @@ app.post('/api/courses', authenticate, validateCourse, catchAsync(async (req, re
   });
 }));
 
-app.get('/api/courses/:supabaseId', authenticate, catchAsync(async (req, res) => {
-  const { supabaseId } = req.params;
+app.get('/api/courses', authenticate, catchAsync(async (req, res) => {
+  const { user_id } = req.query;
   
-  if (!supabaseId || typeof supabaseId !== 'string' || supabaseId.length < 8) {
-    throw new AppError('Invalid supabaseId', 400);
+  if (!user_id || typeof user_id !== 'string' || user_id.length < 8) {
+    throw new AppError('Invalid user_id parameter', 400);
   }
   
   // Verify user is requesting their own data
-  if (supabaseId !== req.user.id) {
+  if (user_id !== req.user.supabaseId) {
     throw new AppError('Unauthorized: Cannot access other users\' data', 403);
   }
   
-  const courses = await Course.find({ supabaseId }).sort({ createdAt: -1 });
+  const courses = await Course.find({ supabaseId: user_id }).sort({ createdAt: -1 });
   
   res.status(200).json({
     status: 'success',
-    results: courses.length,
-    data: { courses }
+    data: courses
   });
 }));
 

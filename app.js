@@ -14,7 +14,6 @@ import { globalErrorHandler, notFound } from './middleware/errorHandler.js';
 // Import routes
 import syllabusRoutes from './routes/syllabus.route.js';
 import courseRoutes from './routes/course.route.js';
-import courseRoutes from './routes/course.route.js';
 // Import other routes...
 
 // Create Express app
