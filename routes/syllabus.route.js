@@ -1,6 +1,15 @@
+import express from 'express';
+import multer from 'multer';
+import axios from 'axios';
 import { authenticate } from '../middleware/auth.js';
 
-app.post('/api/syllabus/import', authenticate, upload.single('file'), async (req, res) => {
+const router = express.Router();
+
+// Use memory storage so we have access to req.file.buffer
+const storage = multer.memoryStorage();
+const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 } });
+
+router.post('/import', authenticate, upload.single('file'), async (req, res) => {
   console.log('--- /api/syllabus/import called ---');
   if (req.file) {
     console.log('File received:', req.file.originalname, req.file.mimetype, req.file.size);
@@ -14,11 +23,17 @@ app.post('/api/syllabus/import', authenticate, upload.single('file'), async (req
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    // Encode file as base64
-    const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
+  // Encode file as base64
+  const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
 
     // Call GPT-4 Vision API for syllabus analysis
-    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+    let response;
+    // If OpenAI key is missing, skip remote call and fallback to local parsing
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error('OpenAI API key not configured');
+    }
+
+    response = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4-vision-preview',
       max_tokens: 4096,
       messages: [
@@ -77,7 +92,7 @@ Extract ALL relevant information. Use null for missing values. Format dates as Y
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       }
-    });
+  });
 
     if (!response.data.choices || !response.data.choices[0]?.message?.content) {
       throw new Error('Invalid response from GPT-4 Vision');
@@ -126,6 +141,24 @@ Extract ALL relevant information. Use null for missing values. Format dates as Y
       });
     }
   } catch (error) {
+    console.warn('OpenAI extraction failed or not configured:', error.message);
+
+    // Try a simple fallback for PDFs using pdf-parse to extract text
+    try {
+      if (req.file && req.file.mimetype === 'application/pdf') {
+        const pdfParse = await import('pdf-parse');
+        const data = await pdfParse.default(req.file.buffer);
+        const text = data.text || '';
+
+        // Very naive parsing: split by lines and look for course-like lines (fallback)
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const courses = lines.slice(0, 10).map((l, i) => ({ name: l, code: null, professor: null }));
+        return res.json({ status: 'success', source: 'local-fallback', data: { courses, assignments: [] } });
+      }
+    } catch (fallbackErr) {
+      console.error('Local PDF fallback failed:', fallbackErr);
+    }
+
     console.error('Error processing syllabus:', error);
     res.status(500).json({
       error: 'Failed to process syllabus',
@@ -133,3 +166,5 @@ Extract ALL relevant information. Use null for missing values. Format dates as Y
     });
   }
 });
+
+export default router;
