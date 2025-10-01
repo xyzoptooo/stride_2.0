@@ -300,9 +300,12 @@ const csrfProtection = (req, res, next) => {
   }
 
   // Check origin header
+  // Allow preflight requests through without CSRF checks
+  if (req.method === 'OPTIONS') return next();
+
   const origin = req.headers.origin;
-  const allowedOrigins = ['http://localhost:5173', 'https://stride-2-0.vercel.app'];
-  
+  const allowedOrigins = ['http://localhost:5173', 'https://stride-2-0.vercel.app', 'https://www.semesterstride.app', 'https://semesterstride.app'];
+
   if (req.method !== 'GET' && (!origin || !allowedOrigins.includes(origin))) {
     return next(new AppError('Invalid origin', 403));
   }

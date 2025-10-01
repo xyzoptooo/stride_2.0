@@ -14,6 +14,7 @@ import { globalErrorHandler, notFound } from './middleware/errorHandler.js';
 // Import routes
 import syllabusRoutes from './routes/syllabus.route.js';
 import courseRoutes from './routes/course.route.js';
+import onboardingRoutes from './routes/onboarding.route.js';
 // Import other routes...
 
 // Create Express app
@@ -104,6 +105,7 @@ app.use('/api/', limiter);
 // Mount routes
 app.use('/api/syllabus', syllabusRoutes);
 app.use('/api/courses', courseRoutes);
+app.use('/api/onboarding', onboardingRoutes);
 // Mount other routes...
 
 // Handle 404 errors

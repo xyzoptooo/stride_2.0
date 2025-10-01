@@ -17,7 +17,9 @@ router.get('/', async (req, res, next) => {
       throw new AppError('User ID is required', 400);
     }
     
-    const courses = await Course.find({ supabaseId: user_id });
+  const query = { supabaseId: user_id };
+  if (req.query.semester) query.semester = req.query.semester;
+  const courses = await Course.find(query);
     
     // Set explicit content type
     res.setHeader('Content-Type', 'application/json');

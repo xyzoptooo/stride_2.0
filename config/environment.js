@@ -77,6 +77,7 @@ validateEnv();
 export const env = {
   port: process.env.PORT || 3000,
   MONGODB_URI: process.env.MONGODB_URI,
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   sessionSecret: process.env.SESSION_SECRET,
   maxFileSize: process.env.MAX_FILE_SIZE || '50mb',
   rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW || (15 * 60 * 1000).toString()),
