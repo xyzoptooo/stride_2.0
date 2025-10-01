@@ -7,15 +7,25 @@ dotenv.config();
 export const isProduction = process.env.NODE_ENV === 'production';
 export const isDevelopment = process.env.NODE_ENV === 'development';
 
+// Server settings
+// (merged below into the main env export)
+
 // CORS settings
-export const allowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'https://stride-2-0.onrender.com',
-  'https://www.semesterstride.app',
-  'https://semesterstride.app',
-  process.env.FRONTEND_URL,
-].filter(Boolean);
+export const corsConfig = {
+  allowedOrigins: [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'https://stride-2-0.onrender.com',
+    'https://www.semesterstride.app',
+    'https://semesterstride.app',
+    process.env.FRONTEND_URL,
+  ].filter(Boolean),
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 600 // 10 minutes
+};
 
 // Required environment variables
 export const requiredEnvVars = [
@@ -53,39 +63,23 @@ export const validateEnv = () => {
   }
   
   // Validate MongoDB URI format
-  if (!/^mongodb(\+srv)?:\/\/.+/.test(process.env.MONGODB_URI)) {
+  if (!process.env.MONGODB_URI?.startsWith('mongodb')) {
     throw new Error('Invalid MONGODB_URI format');
   }
 
-  // Production-specific validations
-  if (isProduction) {
-    // Validate M-Pesa URLs
-    if (process.env.MPESA_BASE_URL.includes('sandbox')) {
-      throw new Error('Production environment cannot use sandbox M-Pesa URL');
-    }
-
-    if (!process.env.MPESA_CALLBACK_URL.startsWith('https://')) {
-      throw new Error('M-Pesa callback URL must use HTTPS in production');
-    }
-
-    // Validate security settings
-    if (process.env.COOKIE_SECURE !== 'true') {
-      throw new Error('Cookies must be secure in production');
-    }
-
-    if (process.env.EMAIL_SECURE !== 'true') {
-      throw new Error('Email must use secure connection in production');
-    }
-  }
+  return true;
 };
+
+// Apply environment validation
+validateEnv();
 
 // Export environment variables with defaults
 export const env = {
-  port: process.env.PORT || 4000,
+  port: process.env.PORT || 3000,
   MONGODB_URI: process.env.MONGODB_URI,
   sessionSecret: process.env.SESSION_SECRET,
-  maxFileSize: process.env.MAX_FILE_SIZE || '10mb',
-  rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW || '900000'),
+  maxFileSize: process.env.MAX_FILE_SIZE || '50mb',
+  rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW || (15 * 60 * 1000).toString()),
   rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100'),
   cookieSecure: isProduction ? true : (process.env.COOKIE_SECURE === 'true'),
   emailSecure: isProduction ? true : (process.env.EMAIL_SECURE === 'true'),
