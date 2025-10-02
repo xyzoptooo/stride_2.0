@@ -49,6 +49,12 @@ const maybeAuthenticate = async (req, res, next) => {
   }
 
   try {
+    // If Supabase config missing, avoid making a network call to undefined host
+    if (!env.SUPABASE_PROJECT_ID || !env.SUPABASE_SERVICE_KEY) {
+      console.warn('Supabase config missing; skipping token verification');
+      if (env.allowAnonOnboarding) return next();
+      return res.status(500).json({ error: 'Server misconfiguration: SUPABASE_PROJECT_ID or SUPABASE_SERVICE_KEY missing' });
+    }
     const resp = await axios.get(`https://${env.SUPABASE_PROJECT_ID}.supabase.co/auth/v1/user`, {
       headers: { 'Authorization': `Bearer ${token}`, 'apikey': env.SUPABASE_SERVICE_KEY },
       timeout: 5000
@@ -61,9 +67,12 @@ const maybeAuthenticate = async (req, res, next) => {
     if (env.allowAnonOnboarding) return next();
     return res.status(401).json({ error: 'Invalid or expired token' });
   } catch (err) {
-    // If verification fails, and anonymous onboarding is allowed, continue as anonymous.
-    console.warn('Token verification failed in onboarding route:', err?.response?.status || err.message);
+    // If verification fails, don't let network/DNS errors throw a 500 - log and fallback.
+    const msg = err?.response?.status ? `Supabase responded ${err.response.status}` : err?.message || String(err);
+    console.warn('Token verification failed in onboarding route:', msg);
+    // If the error is network/DNS related, treat as verification failure (not fatal)
     if (env.allowAnonOnboarding) return next();
+    // Otherwise, respond with 401 to indicate auth is required
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 };
@@ -81,7 +90,12 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
         try {
           ocrText = await recognizeBuffer(req.file.buffer);
         } catch (e) {
+          // recognizeBuffer already logs; bubble up only if it's a fatal worker error
           logger?.warn('OCR error in onboarding route', { err: e?.message || e });
+          // If OCR subsystem is broken/unavailable, return a 503 so clients can retry later
+          if (e && /OCR worker marked as broken|worker\.load is not a function|langsArr\.map is not a function/i.test(e?.message || '')) {
+            return res.status(503).json({ error: 'OCR service currently unavailable, please try again later' });
+          }
           ocrText = '';
         }
       }

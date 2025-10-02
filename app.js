@@ -149,7 +149,9 @@ async function startServer() {
   console.log('Connected to MongoDB');
 
   // Pre-warm OCR worker to reduce first-request latency
-  initWorker().then(() => console.log('Tesseract worker initialized')).catch((err) => console.warn('Tesseract pre-warm failed', err?.message || err));
+  initWorker()
+    .then(() => console.log('Tesseract worker initialized'))
+    .catch((err) => console.warn('Tesseract pre-warm failed', err?.stack || err?.message || err));
 
   // Start server
   const port = env.port;
@@ -183,6 +185,25 @@ async function startServer() {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+
+  // Global crash handlers: attempt graceful shutdown on unexpected errors, but avoid noisy exits from worker threads
+  process.on('uncaughtException', async (err) => {
+    console.error('UNCAUGHT EXCEPTION! 💥 Shutting down...', err?.stack || err);
+    try {
+      await terminateWorker();
+    } catch (e) { /* noop */ }
+    try { await mongoose.disconnect(); } catch (e) { /* noop */ }
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', async (reason) => {
+    console.error('UNHANDLED REJECTION! 💥 Shutting down...', reason);
+    try {
+      await terminateWorker();
+    } catch (e) { /* noop */ }
+    try { await mongoose.disconnect(); } catch (e) { /* noop */ }
+    process.exit(1);
+  });
 
   return server;
 }

@@ -12,6 +12,12 @@ export const authenticate = async (req, res, next) => {
     const token = authHeader.replace('Bearer ', '').trim();
 
     try {
+      // If Supabase config missing, fail fast
+      if (!env.SUPABASE_PROJECT_ID || !env.SUPABASE_SERVICE_KEY) {
+        console.error('SUPABASE_PROJECT_ID or SUPABASE_SERVICE_KEY not configured');
+        return res.status(500).json({ error: 'Server misconfiguration: authentication not available' });
+      }
+
       // Call Supabase user endpoint to validate token
       const resp = await axios.get(`https://${env.SUPABASE_PROJECT_ID}.supabase.co/auth/v1/user`, {
         headers: {
