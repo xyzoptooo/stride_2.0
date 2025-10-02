@@ -7,9 +7,9 @@
     "node": "22.x"
   },
   "scripts": {
-    "start": "cross-env NODE_ENV=production node index.js",
+  "start": "cross-env NODE_ENV=production node app.js",
     "dev": "cross-env NODE_ENV=development nodemon index.js",
-    "test": "jest --detectOpenHandles",
+  "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles",
     "lint": "eslint .",
     "format": "prettier --write .",
     "build": "cross-env NODE_ENV=production npm install --production",

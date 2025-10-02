@@ -7,6 +7,8 @@ import { env } from '../config/environment.js';
 import Course from '../models/course.js';
 import Assignment from '../models/assignment.js';
 import { logger } from '../utils/logger.js';
+import rateLimit from 'express-rate-limit';
+import { globalSemaphore } from '../utils/concurrency.js';
 
 const router = express.Router();
 
@@ -24,24 +26,34 @@ function getCurrentSemester() {
   return `Fall ${year}`;
 }
 
-router.post('/import', authenticate, upload.single('file'), async (req, res) => {
+// Per-route limiter: protect heavy AI/OCR endpoints from abuse
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 6,
+  message: 'Too many uploads, please try again later.'
+});
+
+router.post('/import', authenticate, uploadLimiter, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    // run OCR for images using shared worker
-    let ocrText = '';
-    if (req.file.mimetype && req.file.mimetype.startsWith('image/')) {
-      try {
-        ocrText = await recognizeBuffer(req.file.buffer);
-      } catch (e) {
-        console.warn('OCR error in onboarding route:', e?.message || e);
-        ocrText = '';
+    // Acquire a slot in the global semaphore to limit concurrent OCR/OpenAI calls
+    const release = await globalSemaphore.acquire();
+    try {
+      // run OCR for images using shared worker
+      let ocrText = '';
+      if (req.file.mimetype && req.file.mimetype.startsWith('image/')) {
+        try {
+          ocrText = await recognizeBuffer(req.file.buffer);
+        } catch (e) {
+          logger?.warn('OCR error in onboarding route', { err: e?.message || e });
+          ocrText = '';
+        }
       }
-    }
 
-    const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
+      const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
 
-  if (!env.OPENAI_API_KEY) {
+      if (!env.OPENAI_API_KEY) {
       // Fallback: if PDF, try pdf-parse; if image, return OCR text as best-effort
       if (req.file.mimetype === 'application/pdf') {
         const pdfParse = await import('pdf-parse');
@@ -65,7 +77,7 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
     if (ocrText) messages.push({ role: 'user', content: `OCR_TEXT:\n${ocrText}` });
     messages.push({ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:${req.file.mimetype};base64,${fileBase64}` } }] });
 
-  const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
+      const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4-vision-preview',
       max_tokens: 4096,
       messages: messages
@@ -76,7 +88,7 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
       }
     });
 
-    const content = resp.data?.choices?.[0]?.message?.content;
+      const content = resp.data?.choices?.[0]?.message?.content;
     if (!content) throw new Error('Empty response from model');
 
     let extracted;
@@ -144,8 +156,12 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
       res.json({ status: 'success', source: 'gpt-4-vision', data: extracted, saved: { courses: [], assignments: [] }, warning: 'Failed to persist data' });
       return;
     }
+    } finally {
+      // ensure we always release the semaphore slot
+      try { release(); } catch (e) { /* noop */ }
+    }
   } catch (err) {
-    console.error('Onboarding import error:', err?.message || err);
+    logger?.error('Onboarding import error', { err: err?.message || err });
     res.status(500).json({ error: 'Failed to process onboarding document', details: err?.message || '' });
   }
 });

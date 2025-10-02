@@ -10,7 +10,7 @@ import compression from 'compression';
 // Import configurations
 import { env, isProduction } from './config/environment.js';
 import { globalErrorHandler, notFound } from './middleware/errorHandler.js';
-import { initWorker, terminateWorker } from './lib/ocr.js';
+import { initWorker, terminateWorker, isWorkerReady } from './lib/ocr.js';
 
 // Import routes
 import syllabusRoutes from './routes/syllabus.route.js';
@@ -18,17 +18,43 @@ import courseRoutes from './routes/course.route.js';
 import onboardingRoutes from './routes/onboarding.route.js';
 // Import other routes...
 
-// Create Express app
-const app = express();
+// Create Express app factory for testing
+function createApp() {
+  const app = express();
 
-// Configure security middleware
-const corsOptions = {
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps, curl, etc.)
-    if (!origin) {
-      return callback(null, true);
-    }
-    
+  // Configure security middleware
+  const corsOptions = {
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, etc.)
+      if (!origin) {
+        return callback(null, true);
+      }
+      
+      const allowedOrigins = [
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'https://stride-2-0.onrender.com',
+        'https://www.semesterstride.app',
+        'https://semesterstride.app'
+      ];
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
+    maxAge: 600 // 10 minutes
+  };
+
+  // Ensure the response sets Access-Control-Allow-Origin to the requesting origin when allowed
+  // This avoids returning '*' when credentials are required by the browser
+  app.use((req, res, next) => {
+    const originHeader = req.headers.origin;
     const allowedOrigins = [
       'http://localhost:3000',
       'http://localhost:5173',
@@ -37,92 +63,90 @@ const corsOptions = {
       'https://semesterstride.app'
     ];
 
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+    if (originHeader && allowedOrigins.includes(originHeader)) {
+      res.setHeader('Access-Control-Allow-Origin', originHeader);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
     }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range'],
-  maxAge: 600 // 10 minutes
-};
 
-// Ensure the response sets Access-Control-Allow-Origin to the requesting origin when allowed
-// This avoids returning '*' when credentials are required by the browser
-app.use((req, res, next) => {
-  const originHeader = req.headers.origin;
-  const allowedOrigins = [
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'https://stride-2-0.onrender.com',
-    'https://www.semesterstride.app',
-    'https://semesterstride.app'
-  ];
+    // Handle preflight requests quickly
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
 
-  if (originHeader && allowedOrigins.includes(originHeader)) {
-    res.setHeader('Access-Control-Allow-Origin', originHeader);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    next();
+  });
+
+  // Apply security middleware
+  app.use(cors(corsOptions));
+  app.use(helmet());
+  app.use(mongoSanitize());
+  app.use(xss());
+  app.use(express.json({ limit: env.maxFileSize }));
+  app.use(express.urlencoded({ extended: true, limit: env.maxFileSize }));
+
+  // Enable compression in production
+  if (isProduction) {
+    app.use(compression());
+    app.set('trust proxy', 1);
   }
 
-  // Handle preflight requests quickly
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
+  // Rate limiting
+  const limiter = rateLimit({
+    // values are configurable via RATE_LIMIT_WINDOW_MS and RATE_LIMIT_MAX env vars
+    windowMs: env.rateLimitWindow,
+    max: env.rateLimitMax,
+    message: 'Too many requests from this IP, please try again later.',
+    standardHeaders: true,
+    legacyHeaders: false
+  });
 
-  next();
-});
+  // Readiness endpoint for platform health checks
+  app.get('/ready', async (req, res) => {
+    const mongooseState = mongoose.connection.readyState; // 1 = connected
+    const workerReady = isWorkerReady();
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: env.rateLimitWindow,
-  max: env.rateLimitMax,
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false
-});
+    if (mongooseState === 1 && workerReady) {
+      return res.status(200).json({ status: 'ready', db: 'connected', ocr: 'ready' });
+    }
 
-// Apply security middleware
-app.use(cors(corsOptions));
-app.use(helmet());
-app.use(mongoSanitize());
-app.use(xss());
-app.use(express.json({ limit: env.maxFileSize }));
-app.use(express.urlencoded({ extended: true, limit: env.maxFileSize }));
+    const details = {
+      db: mongooseState === 1 ? 'connected' : 'disconnected',
+      ocr: workerReady ? 'ready' : 'not-ready'
+    };
 
-// Enable compression in production
-if (isProduction) {
-  app.use(compression());
-  app.set('trust proxy', 1);
+    return res.status(503).json({ status: 'not-ready', details });
+  });
+
+  // Apply rate limiting to API routes
+  app.use('/api/', limiter);
+
+  // Mount routes
+  app.use('/api/syllabus', syllabusRoutes);
+  app.use('/api/courses', courseRoutes);
+  app.use('/api/onboarding', onboardingRoutes);
+  // Mount other routes...
+
+  // Handle 404 errors
+  app.use(notFound);
+
+  // Global error handler
+  app.use(globalErrorHandler);
+
+  return app;
 }
+const app = createApp();
 
-// Apply rate limiting to API routes
-app.use('/api/', limiter);
+async function startServer() {
+  // Connect to MongoDB
+  await mongoose.connect(env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  });
 
-// Mount routes
-app.use('/api/syllabus', syllabusRoutes);
-app.use('/api/courses', courseRoutes);
-app.use('/api/onboarding', onboardingRoutes);
-// Mount other routes...
-
-// Handle 404 errors
-app.use(notFound);
-
-// Global error handler
-app.use(globalErrorHandler);
-
-// Connect to MongoDB
-mongoose.connect(env.mongodbUri, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => {
   console.log('Connected to MongoDB');
-  
+
   // Pre-warm OCR worker to reduce first-request latency
   initWorker().then(() => console.log('Tesseract worker initialized')).catch((err) => console.warn('Tesseract pre-warm failed', err?.message || err));
 
@@ -155,8 +179,16 @@ mongoose.connect(env.mongodbUri, {
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
-})
-.catch((error) => {
-  console.error('MongoDB connection error:', error);
-  process.exit(1);
-});
+
+  return server;
+}
+
+// If this file is run directly, start the server
+if (process.argv[1] && process.argv[1].endsWith('app.js')) {
+  startServer().catch((err) => {
+    console.error('Failed to start server', err);
+    process.exit(1);
+  });
+}
+
+export { createApp, app, startServer };

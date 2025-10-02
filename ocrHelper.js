@@ -5,6 +5,7 @@ import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
 import { createLogger, format, transports } from 'winston';
 import axios from 'axios';
+import { env } from './config/environment.js';
 
 // Configure structured logging
 const logger = createLogger({
@@ -19,7 +20,20 @@ const logger = createLogger({
 
 // Configuration constants
 const CONFIG = {
-  MAX_FILE_SIZE: 50 * 1024 * 1024, // 50MB
+  // derive byte limit from env.maxFileSize if possible; env.maxFileSize is a string like '50mb'
+  MAX_FILE_SIZE: (function parseSize(str) {
+    try {
+      if (!str) return 50 * 1024 * 1024;
+      const normalized = String(str).trim().toLowerCase();
+      if (normalized.endsWith('mb')) return parseFloat(normalized) * 1024 * 1024;
+      if (normalized.endsWith('kb')) return parseFloat(normalized) * 1024;
+      if (normalized.endsWith('b')) return parseFloat(normalized);
+      // fallback assume bytes
+      return parseInt(normalized, 10) || 50 * 1024 * 1024;
+    } catch (err) {
+      return 50 * 1024 * 1024;
+    }
+  })(env.maxFileSize),
   OCR_TIMEOUT_MS: 120000, // 2 minutes
   MIN_TEXT_LENGTH: 10,
   SUPPORTED_MIME_TYPES: new Set([
@@ -77,7 +91,7 @@ async function ocrImageBuffer(buffer, filename) {
       max_tokens: 4096
     }, {
       headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       }
     }).catch(error => {

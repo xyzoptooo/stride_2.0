@@ -7,6 +7,8 @@ import { env } from '../config/environment.js';
 import Course from '../models/course.js';
 import Assignment from '../models/assignment.js';
 import { logger } from '../utils/logger.js';
+import rateLimit from 'express-rate-limit';
+import { globalSemaphore } from '../utils/concurrency.js';
 
 const router = express.Router();
 
@@ -23,7 +25,10 @@ function getCurrentSemester(now = new Date()) {
   return `Fall ${year}`;
 }
 
-router.post('/import', authenticate, upload.single('file'), async (req, res) => {
+// Per-route limiter for syllabus imports
+const syllabusLimiter = rateLimit({ windowMs: 60 * 1000, max: 6, message: 'Too many uploads, please try later.' });
+
+router.post('/import', authenticate, syllabusLimiter, upload.single('file'), async (req, res) => {
   logger?.info('/api/syllabus/import called');
 
   if (!req.file) {
@@ -31,6 +36,8 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
+  // Acquire semaphore slot for heavy processing
+  const release = await globalSemaphore.acquire();
   try {
     const supabaseId = req.user?.id || req.user?.sub || req.user?.user?.id;
     if (!supabaseId) throw new Error('Unable to determine user id from auth');
@@ -125,8 +132,8 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
     extractedData.courses = (extractedData.courses || []).filter(c => c && c.name);
     extractedData.assignments = (extractedData.assignments || []).filter(a => a && a.title);
 
-    // Persist to DB
-    try {
+  // Persist to DB
+  try {
       const semester = getCurrentSemester();
 
       const savedCourses = [];
@@ -195,6 +202,8 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
     }
 
     return res.status(500).json({ error: 'Failed to process syllabus', details: error?.message || '' });
+  } finally {
+    try { release(); } catch (e) { /* noop */ }
   }
 });
 

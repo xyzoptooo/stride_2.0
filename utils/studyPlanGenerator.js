@@ -1,5 +1,6 @@
 import { addDays, differenceInDays, parseISO, format } from 'date-fns';
 import axios from 'axios';
+import { env } from '../config/environment.js';
 
 /**
  * Analyzes student's learning patterns and preferences
@@ -59,7 +60,7 @@ async function estimateAssignmentComplexity(assignment) {
       },
       {
         headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }
@@ -113,7 +114,7 @@ export async function generateStudyPlan(courses, assignments, activities, userPr
       },
       {
         headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }
@@ -229,7 +230,7 @@ async function generateStudyStrategies(item, complexity) {
       },
       {
         headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }

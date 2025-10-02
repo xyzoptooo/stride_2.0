@@ -79,9 +79,14 @@ export const env = {
   MONGODB_URI: process.env.MONGODB_URI,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   sessionSecret: process.env.SESSION_SECRET,
+  // Maximum payload size accepted by express.json / urlencoded. Accepts values like '10mb', '50mb'
   maxFileSize: process.env.MAX_FILE_SIZE || '50mb',
-  rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW || (15 * 60 * 1000).toString()),
-  rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100'),
+  // Rate limit window in milliseconds (default: 15 minutes)
+  rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW_MS || (15 * 60 * 1000).toString(), 10),
+  // Max requests per window per IP (default: 100)
+  rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
+  // Concurrency for heavy CPU/IO bound tasks like OCR/OpenAI requests (default: 2)
+  ocrConcurrency: parseInt(process.env.OCR_CONCURRENCY || '2', 10),
   cookieSecure: isProduction ? true : (process.env.COOKIE_SECURE === 'true'),
   emailSecure: isProduction ? true : (process.env.EMAIL_SECURE === 'true'),
   logLevel: process.env.LOG_LEVEL || (isProduction ? 'error' : 'debug'),

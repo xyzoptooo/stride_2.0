@@ -1,4 +1,5 @@
-import { isProduction } from '../config/environment.js';
+import { isProduction, env } from '../config/environment.js';
+import winstonLogger from './winstonWrapper.js';
 
 class Logger {
   constructor() {
@@ -15,8 +16,9 @@ class Logger {
   }
 
   log(level, message, meta = {}) {
-    if (this.isProduction) {
-      console.log(JSON.stringify(this.formatMessage(level, message, meta)));
+    if (this.isProduction && winstonLogger) {
+      // Use winston for structured logging in production
+      winstonLogger.log({ level, message, ...meta });
     } else {
       console.log(`[${level.toUpperCase()}]`, message, meta);
     }
