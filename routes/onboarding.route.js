@@ -37,9 +37,35 @@ const uploadLimiter = rateLimit({
 // Note: allowAnonOnboarding lets anonymous users upload a file and receive extracted
 // data for preview. Persistence to the DB happens only when authenticated.
 const maybeAuthenticate = async (req, res, next) => {
-  // if auth header present, enforce authentication, otherwise skip
-  if (req.header('Authorization')) return authenticate(req, res, next);
-  return next();
+  const authHeader = req.header('Authorization');
+  if (!authHeader) return next();
+
+  // If Authorization present, try to validate token with Supabase.
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.replace('Bearer ', '').trim() : null;
+  if (!token) {
+    // malformed header - treat as anonymous if allowed
+    if (env.allowAnonOnboarding) return next();
+    return res.status(401).json({ error: 'No authentication token provided' });
+  }
+
+  try {
+    const resp = await axios.get(`https://${env.SUPABASE_PROJECT_ID}.supabase.co/auth/v1/user`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'apikey': env.SUPABASE_SERVICE_KEY },
+      timeout: 5000
+    });
+    if (resp?.data) {
+      req.user = resp.data;
+      return next();
+    }
+    // If no data returned, fallthrough to anonymous if allowed
+    if (env.allowAnonOnboarding) return next();
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  } catch (err) {
+    // If verification fails, and anonymous onboarding is allowed, continue as anonymous.
+    console.warn('Token verification failed in onboarding route:', err?.response?.status || err.message);
+    if (env.allowAnonOnboarding) return next();
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
 };
 
 router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), async (req, res) => {
