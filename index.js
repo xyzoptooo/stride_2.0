@@ -12,6 +12,7 @@ import mongoSanitize from 'express-mongo-sanitize';
 import xss from 'xss-clean';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
+import hpp from 'hpp';
 
 // File handling
 import multer from 'multer';
@@ -141,12 +142,49 @@ const authenticate = catchAsync(async (req, res, next) => {
 });
 
 // Initialize middleware
-app.use(cors());
 app.use(helmet());
 app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(mongoSanitize());
 app.use(xss());
+app.use(hpp());
+
+// CORS configuration
+const corsOptions = {
+  origin: (origin, callback) => {
+    const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').concat([
+      'http://localhost:5173',
+      'http://localhost:8080',
+      'http://localhost:3000',
+      'https://stride-2-0.vercel.app',
+      'https://www.semesterstride.app',
+      'https://semesterstride.app',
+      'https://semester-stride-planner.vercel.app'
+    ]);
+    // Remove any empty strings from the array, just in case
+    const filteredOrigins = allowedOrigins.filter(Boolean);
+    if (!origin || filteredOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 600 // 10 minutes
+};
+app.use(cors(corsOptions));
+
+// Rate Limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(limiter);
 
 // Study plan route handler
 app.post('/api/study-plan/generate', authenticate, catchAsync(async (req, res) => {
@@ -208,28 +246,6 @@ try {
 // Using imported globalErrorHandler for error handling middleware
 
 // Security configurations
-const corsOptions = {
-  origin: (origin, callback) => {
-    const allowedOrigins = env.ALLOWED_ORIGINS?.split(',') || [
-      'http://localhost:5173',
-      'http://localhost:8080',
-      'http://localhost:3000',
-      'https://stride-2-0.vercel.app',
-      'https://www.semesterstride.app',
-      'https://semesterstride.app'
-    ];
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range'],
-  maxAge: 600 // 10 minutes
-};
 
 // Rate limiting configurations
 
@@ -242,9 +258,6 @@ const corsOptions = {
 
 // In-memory payment status store (replace with database in production)
 // Payment status is tracked in paymentStatusStore Map defined above
-
-// Load environment variables first
-dotenv.config();
 
 // Environment variables are validated by validateEnv() at startup
 
