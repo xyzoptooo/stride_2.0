@@ -3,6 +3,7 @@ import multer from 'multer';
 import axios from 'axios';
 import { recognizeBuffer } from '../lib/ocr.js';
 import { authenticate } from '../middleware/auth.js';
+import { env } from '../config/environment.js';
 import Course from '../models/course.js';
 import Assignment from '../models/assignment.js';
 import { logger } from '../utils/logger.js';
@@ -40,7 +41,7 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
 
     const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
 
-    if (!process.env.OPENAI_API_KEY) {
+  if (!env.OPENAI_API_KEY) {
       // Fallback: if PDF, try pdf-parse; if image, return OCR text as best-effort
       if (req.file.mimetype === 'application/pdf') {
         const pdfParse = await import('pdf-parse');
@@ -64,13 +65,13 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
     if (ocrText) messages.push({ role: 'user', content: `OCR_TEXT:\n${ocrText}` });
     messages.push({ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:${req.file.mimetype};base64,${fileBase64}` } }] });
 
-    const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
+  const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4-vision-preview',
       max_tokens: 4096,
       messages: messages
     }, {
       headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       }
     });

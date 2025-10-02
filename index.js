@@ -357,8 +357,16 @@ app.use((req, res, next) => {
   
   // Validate content type for POST/PUT requests
   if (req.method === 'POST' || req.method === 'PUT') {
-    const contentType = req.headers['content-type'];
-    if (!contentType || !contentType.includes('application/json')) {
+    const contentType = (req.headers['content-type'] || '').toLowerCase();
+
+    // Allow JSON, multipart uploads, PDFs, images, and common Word document types
+    const isJson = contentType.includes('application/json');
+    const isMultipart = contentType.startsWith('multipart/');
+    const isPdf = contentType.includes('application/pdf');
+    const isImage = contentType.startsWith('image/');
+    const isWord = contentType.includes('application/msword') || contentType.includes('vnd.openxmlformats-officedocument');
+
+    if (!contentType || !(isJson || isMultipart || isPdf || isImage || isWord)) {
       return next(new AppError('Invalid content type', 415));
     }
   }

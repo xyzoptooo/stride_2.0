@@ -10,6 +10,7 @@ import compression from 'compression';
 // Import configurations
 import { env, isProduction } from './config/environment.js';
 import { globalErrorHandler, notFound } from './middleware/errorHandler.js';
+import { initWorker, terminateWorker } from './lib/ocr.js';
 
 // Import routes
 import syllabusRoutes from './routes/syllabus.route.js';
@@ -122,11 +123,38 @@ mongoose.connect(env.mongodbUri, {
 .then(() => {
   console.log('Connected to MongoDB');
   
+  // Pre-warm OCR worker to reduce first-request latency
+  initWorker().then(() => console.log('Tesseract worker initialized')).catch((err) => console.warn('Tesseract pre-warm failed', err?.message || err));
+
   // Start server
   const port = env.port;
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log(`Server running in ${process.env.NODE_ENV} mode on port ${port}`);
   });
+
+  // Graceful shutdown handling
+  const shutdown = async (signal) => {
+    console.log(`Received ${signal}. Shutting down gracefully...`);
+    try {
+      await terminateWorker();
+      await mongoose.disconnect();
+      server.close(() => {
+        console.log('HTTP server closed.');
+        process.exit(0);
+      });
+      // Force exit if not closed in time
+      setTimeout(() => {
+        console.error('Forcing shutdown after timeout');
+        process.exit(1);
+      }, 10000).unref();
+    } catch (err) {
+      console.error('Error during shutdown:', err);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 })
 .catch((error) => {
   console.error('MongoDB connection error:', error);

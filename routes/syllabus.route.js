@@ -3,6 +3,7 @@ import multer from 'multer';
 import axios from 'axios';
 import { recognizeBuffer } from '../lib/ocr.js';
 import { authenticate } from '../middleware/auth.js';
+import { env } from '../config/environment.js';
 import Course from '../models/course.js';
 import Assignment from '../models/assignment.js';
 import { logger } from '../utils/logger.js';
@@ -50,7 +51,7 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
     }
 
     // If OpenAI key is not configured, fall back to pdf-parse or OCR-only
-    if (!process.env.OPENAI_API_KEY) {
+  if (!env.OPENAI_API_KEY) {
       try {
         if (req.file.mimetype === 'application/pdf') {
           const pdfParse = await import('pdf-parse');
@@ -78,7 +79,7 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
     // Add a short instruction that the image (if present) is attached as a data URI
     prompt += `Image (if present) is included as a data URI with mimetype ${req.file.mimetype} and will be available to you for visual analysis.`;
 
-    const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+  const response = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4-vision-preview',
       max_tokens: 4096,
       messages: [
@@ -87,7 +88,7 @@ router.post('/import', authenticate, upload.single('file'), async (req, res) => 
       ]
     }, {
       headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       },
       timeout: 120000
