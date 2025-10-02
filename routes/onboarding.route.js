@@ -126,7 +126,8 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
     if (ocrText) messages.push({ role: 'user', content: `OCR_TEXT:\n${ocrText}` });
     messages.push({ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:${req.file.mimetype};base64,${fileBase64}` } }] });
 
-      const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
+      logger.info(`Attempting to use OpenAI model: ${process.env.OPENAI_MODEL || 'gpt-4o'}`);
+    const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
       model: 'gpt-4o',
       max_tokens: 4096,
       messages: messages
