@@ -14,7 +14,8 @@
     "format": "prettier --write .",
     "build": "cross-env NODE_ENV=production npm install --production",
     "build:dev": "cross-env NODE_ENV=development npm install",
-    "security-check": "npm audit"
+    "security-check": "npm audit",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.56.1",

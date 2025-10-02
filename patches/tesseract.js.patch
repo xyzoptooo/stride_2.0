@@ -1,0 +1,9 @@
+--- a/node_modules/.pnpm/tesseract.js@6.0.1/node_modules/tesseract.js/src/createWorker.js
++++ b/node_modules/.pnpm/tesseract.js@6.0.1/node_modules/tesseract.js/src/createWorker.js
+@@ -180,7 +180,7 @@
+     // and this can be avoided entirely if the user loads the correct data ahead of time.
+-    const langsArr = typeof langs === 'string' ? langs.split('+') : langs;
++    const langsArr = Array.isArray(langs) ? langs : (typeof langs === 'string' ? langs.split('+') : []);
+     const _langs = langsArr.filter((x) => !currentLangs.includes(x));
+     currentLangs.push(..._langs);
+ 
