@@ -60,6 +60,36 @@ try {
   // ignore - keep existing index.js behavior
 }
 
+// Temporary debug endpoint: list mounted routes for troubleshooting.
+// Remove or restrict this endpoint before long-term production use.
+app.get('/debug/routes', (req, res) => {
+  try {
+    const listRoutes = (expressApp) => {
+      const routes = [];
+      const stack = expressApp._router?.stack || [];
+      stack.forEach((layer) => {
+        if (layer.route && layer.route.path) {
+          const methods = Object.keys(layer.route.methods || {}).join(',').toUpperCase();
+          routes.push({ path: layer.route.path, methods });
+        } else if (layer.name === 'router' && layer.handle && layer.handle.stack) {
+          layer.handle.stack.forEach((l) => {
+            if (l.route && l.route.path) {
+              const methods = Object.keys(l.route.methods || {}).join(',').toUpperCase();
+              routes.push({ path: l.route.path, methods });
+            }
+          });
+        }
+      });
+      return routes;
+    };
+
+    const routes = listRoutes(app);
+    return res.json({ ok: true, routes });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // Root route handler
 app.get('/', (req, res) => {
   res.status(200).json({

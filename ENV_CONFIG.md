@@ -26,3 +26,14 @@ Notes
 
 - These defaults are conservative for a small single-instance deployment. For real-user scale, consider moving heavy tasks to an async queue (Redis + workers) and using a distributed rate limiter.
 - Do not commit secrets to the repository. Use your hosting provider's secret manager.
+
+Onboarding draft flow
+
+- The onboarding import endpoint supports anonymous preview uploads when `ALLOW_ANON_ONBOARDING` is true (default). When a user uploads before logging in, the server returns parsed data but does not persist it. The frontend saves this as `onboarding_draft` in localStorage.
+- After the user completes login/sign-up, call the `POST /api/onboarding/finalize` endpoint with the parsed draft (or call the helper injected into `window.finalizeOnboardingDraft()` by the frontend component) to persist the parsed courses and assignments to the authenticated user's account.
+
+Redis draft store
+
+- To store drafts server-side, set `REDIS_URL` (or `REDIS_URI`) in your environment. When configured, anonymous onboarding previews are saved in Redis with a TTL controlled by `DRAFT_TTL_SECONDS` (default 86400 seconds = 24 hours).
+- The server returns a `draftId` to the client which the client should pass to `/api/onboarding/finalize` after login. If Redis is not configured, the server will return a preview without a `draftId` and the client will need to handle local persistence.
+

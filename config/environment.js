@@ -87,6 +87,13 @@ export const env = {
   rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
   // Concurrency for heavy CPU/IO bound tasks like OCR/OpenAI requests (default: 2)
   ocrConcurrency: parseInt(process.env.OCR_CONCURRENCY || '2', 10),
+  // Allow anonymous onboarding (run OCR/extraction without requiring auth).
+  // If true, /api/onboarding/import will process files but will not persist them to user DB unless authenticated.
+  allowAnonOnboarding: (process.env.ALLOW_ANON_ONBOARDING || 'true') === 'true',
+  // Redis for short-lived draft storage (optional). Set REDIS_URL to enable.
+  REDIS_URL: process.env.REDIS_URL || process.env.REDIS_URI || null,
+  // Draft TTL in seconds (default 24 hours)
+  DRAFT_TTL_SECONDS: parseInt(process.env.DRAFT_TTL_SECONDS || (24 * 60 * 60).toString(), 10),
   cookieSecure: isProduction ? true : (process.env.COOKIE_SECURE === 'true'),
   emailSecure: isProduction ? true : (process.env.EMAIL_SECURE === 'true'),
   logLevel: process.env.LOG_LEVEL || (isProduction ? 'error' : 'debug'),

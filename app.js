@@ -11,6 +11,7 @@ import compression from 'compression';
 import { env, isProduction } from './config/environment.js';
 import { globalErrorHandler, notFound } from './middleware/errorHandler.js';
 import { initWorker, terminateWorker, isWorkerReady } from './lib/ocr.js';
+import { redisClient } from './utils/draftStore.js';
 
 // Import routes
 import syllabusRoutes from './routes/syllabus.route.js';
@@ -161,6 +162,9 @@ async function startServer() {
     console.log(`Received ${signal}. Shutting down gracefully...`);
     try {
       await terminateWorker();
+      if (redisClient && typeof redisClient.quit === 'function') {
+        try { await redisClient.quit(); } catch (e) { console.warn('Error quitting redis client', e?.message || e); }
+      }
       await mongoose.disconnect();
       server.close(() => {
         console.log('HTTP server closed.');

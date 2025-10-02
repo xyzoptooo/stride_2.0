@@ -7,6 +7,7 @@ import { env } from '../config/environment.js';
 import Course from '../models/course.js';
 import Assignment from '../models/assignment.js';
 import { logger } from '../utils/logger.js';
+import { saveDraft, getDraft, deleteDraft } from '../utils/draftStore.js';
 import rateLimit from 'express-rate-limit';
 import { globalSemaphore } from '../utils/concurrency.js';
 
@@ -33,7 +34,15 @@ const uploadLimiter = rateLimit({
   message: 'Too many uploads, please try again later.'
 });
 
-router.post('/import', authenticate, uploadLimiter, upload.single('file'), async (req, res) => {
+// Note: allowAnonOnboarding lets anonymous users upload a file and receive extracted
+// data for preview. Persistence to the DB happens only when authenticated.
+const maybeAuthenticate = async (req, res, next) => {
+  // if auth header present, enforce authentication, otherwise skip
+  if (req.header('Authorization')) return authenticate(req, res, next);
+  return next();
+};
+
+router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
@@ -106,10 +115,26 @@ router.post('/import', authenticate, uploadLimiter, upload.single('file'), async
     extracted.assignments = (extracted.assignments || []).map(a => ({ ...a }));
     extracted.courses = (extracted.courses || []).filter(c => c?.name).map(c => ({ ...c }));
 
-    // Persist extracted data to DB for the authenticated user
+    // Persist extracted data to DB for the authenticated user (if available and allowed)
     try {
       const supabaseId = req.user?.id || req.user?.sub || req.user?.user?.id;
-      if (!supabaseId) throw new Error('Unable to determine user id from auth');
+
+      // If no supabaseId found (anonymous) and anon onboarding allowed, return extracted data
+      if (!supabaseId) {
+        if (env.allowAnonOnboarding) {
+          // Save draft server-side and return draftId so client can finalize after auth
+          try {
+            const draftId = env.REDIS_URL ? await saveDraft(extracted) : null;
+            const response = { status: 'success', source: 'gpt-4-vision', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' };
+            if (draftId) response['draftId'] = draftId;
+            return res.json(response);
+          } catch (err) {
+            logger?.warn('Failed to save anonymous draft', { err: err?.message || err });
+            return res.json({ status: 'success', source: 'gpt-4-vision', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' });
+          }
+        }
+        throw new Error('Unable to determine user id from auth');
+      }
 
       // Upsert courses (avoid duplicates)
       const semester = getCurrentSemester();
@@ -167,3 +192,63 @@ router.post('/import', authenticate, uploadLimiter, upload.single('file'), async
 });
 
 export default router;
+
+// Finalize endpoint - accepts parsed JSON for persistence and requires authentication
+router.post('/finalize', authenticate, async (req, res) => {
+  try {
+    const supabaseId = req.user?.id || req.user?.sub || req.user?.user?.id;
+    if (!supabaseId) return res.status(401).json({ error: 'Unauthorized' });
+
+    // Support finalizing by passing a draftId (preferred) or by passing parsed JSON in body
+    let extracted = req.body || {};
+    let usedDraftId = null;
+    if (extracted.draftId && env.REDIS_URL) {
+      usedDraftId = extracted.draftId;
+      const draft = await getDraft(usedDraftId);
+      if (!draft) return res.status(404).json({ error: 'Draft not found or expired' });
+      extracted = draft;
+      // delete the draft after reading to avoid reuse
+      await deleteDraft(usedDraftId).catch(() => {});
+    }
+
+    // Same persistence logic as import
+    const semester = getCurrentSemester();
+    const savedCourses = [];
+    for (const c of extracted.courses || []) {
+      const name = (c.name || '').trim();
+      if (!name) continue;
+      const update = {
+        supabaseId,
+        name,
+        professor: c.professor || null,
+        credits: c.credits || null,
+        schedule: c.schedule ? JSON.stringify(c.schedule) : c.schedule || null,
+        progress: 0,
+        semester
+      };
+      const saved = await Course.findOneAndUpdate({ supabaseId, name, semester }, update, { upsert: true, new: true, setDefaultsOnInsert: true });
+      savedCourses.push(saved);
+    }
+
+    const savedAssignments = [];
+    for (const a of extracted.assignments || []) {
+      if (!a.title) continue;
+      const due = a.dueDate ? new Date(a.dueDate) : null;
+      const assignmentDoc = new Assignment({
+        supabaseId,
+        title: a.title,
+        course: a.course || a.courseCode || null,
+        dueDate: due,
+        progress: 0,
+        notes: a.description || null
+      });
+      const savedA = await assignmentDoc.save();
+      savedAssignments.push(savedA);
+    }
+
+    res.json({ status: 'success', saved: { courses: savedCourses, assignments: savedAssignments } });
+  } catch (err) {
+    logger?.error('Finalize onboarding error', { err: err?.message || err });
+    res.status(500).json({ error: 'Failed to finalize onboarding' });
+  }
+});
