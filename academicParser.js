@@ -80,7 +80,8 @@ class AcademicDocumentParser {
         error: {
           message: error.message,
           code: error.errorCode || 'PARSING_FAILED',
-          documentType: 'unknown'
+          documentType: 'unknown',
+          context: error.context,
         },
         metadata: {
           processingTime: Date.now() - startTime,
@@ -108,7 +109,11 @@ class AcademicDocumentParser {
     }
     const academicIndicators = this._findAcademicIndicators(text);
     if (academicIndicators.score < 0.3) {
-      this.validationErrors.push('Text does not appear to be academic content');
+      throw new AcademicParserError(
+        'Text does not appear to be academic content. Please upload a syllabus, timetable, or assignment list.',
+        'NOT_ACADEMIC_CONTENT',
+        { score: academicIndicators.score }
+      );
     }
   }
 
