@@ -39,6 +39,27 @@ dotenv.config();
 // Initialize express app
 const app = express();
 
+// Compatibility shim: if a newer app.js exists (exporting createApp), mount it so
+// deployments that unknowingly start index.js (instead of app.js) still expose
+// the routes and readiness endpoints implemented in app.js (for example /api/onboarding).
+// This uses a dynamic import and is silent on failure.
+try {
+  // top-level await is supported in Node ESM; createApp returns an express app
+  const mod = await import('./app.js');
+  if (mod?.createApp && typeof mod.createApp === 'function') {
+    try {
+      const nestedApp = mod.createApp();
+      // Mount the app at root so its /api/* routes are reachable
+      app.use(nestedApp);
+      console.log('Mounted app.js routes into index.js for compatibility');
+    } catch (mountErr) {
+      console.warn('Failed to mount app.js routes:', mountErr?.message || mountErr);
+    }
+  }
+} catch (e) {
+  // ignore - keep existing index.js behavior
+}
+
 // Root route handler
 app.get('/', (req, res) => {
   res.status(200).json({
