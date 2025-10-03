@@ -10,6 +10,10 @@ import { logger } from '../utils/logger.js';
 import { saveDraft, getDraft, deleteDraft } from '../utils/draftStore.js';
 import rateLimit from 'express-rate-limit';
 import { globalSemaphore } from '../utils/concurrency.js';
+import { HfInference } from '@huggingface/inference';
+
+const hf = env.HF_API_TOKEN ? new HfInference(env.HF_API_TOKEN) : null;
+const VQA_MODEL = 'llava-hf/llava-1.5-7b-hf';
 
 const router = express.Router();
 
@@ -102,59 +106,55 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
 
       const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
 
-      if (!env.OPENAI_API_KEY) {
-      // Fallback: if PDF, try pdf-parse; if image, return OCR text as best-effort
-      if (req.file.mimetype === 'application/pdf') {
-        const pdfParse = await import('pdf-parse');
-        const pdfData = await pdfParse.default(req.file.buffer);
-        const text = pdfData.text || '';
-        // naive parse - return lines as course names
-        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean).slice(0, 30);
-        const courses = lines.map(l => ({ name: l, code: null, professor: null }));
-        return res.json({ status: 'success', source: 'local-fallback', data: { courses, assignments: [] } });
+      // If HF_API_TOKEN is not set, we can't proceed with AI processing.
+      if (!hf) {
+        logger.warn('HF_API_TOKEN not set. Skipping AI processing.');
+        // Fallback to simple parsers if AI is not configured
+        if (req.file.mimetype === 'application/pdf') {
+          const pdfParse = await import('pdf-parse');
+          const pdfData = await pdfParse.default(req.file.buffer);
+          const text = pdfData.text || '';
+          const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean).slice(0, 30);
+          const courses = lines.map(l => ({ name: l, code: null, professor: null }));
+          return res.json({ status: 'success', source: 'local-fallback', data: { courses, assignments: [] } });
+        }
+        // For images, return any OCR text so frontend can show it
+        return res.json({ status: 'success', source: 'ocr-only', data: { ocrText, courses: [], assignments: [] } });
       }
 
-      // For images, return OCR text so frontend can show it
-      return res.json({ status: 'success', source: 'ocr-only', data: { ocrText, courses: [], assignments: [] } });
-    }
+      const question = `Based on the provided syllabus image, extract all courses, assignments, and important dates. Return the information as a single, clean JSON object with three keys: "courses", "assignments", and "importantDates". The "courses" key should be an array of objects, each with "name", "code", and "professor" properties. The "assignments" key should be an array of objects, each with "title", "dueDate" (in YYYY-MM-DD format), and "course" properties. The "importantDates" key should be an array of objects with "title" and "date" (YYYY-MM-DD). If a value is not found, use null. Do not include any explanatory text outside of the JSON object.`;
 
-    const messages = [
-      { role: 'system', content: 'You are an expert assistant that extracts course and assignment information from uploaded onboarding documents. Return JSON only.' },
-      { role: 'user', content: `Extract courses, assignments and important dates from this document. Return JSON with keys: courses, assignments, importantDates. Use null for missing values. Dates as YYYY-MM-DD.` }
-    ];
+      logger.info(`Attempting to use Hugging Face VQA model: ${VQA_MODEL}`);
+      
+      const hfResponse = await hf.visualQuestionAnswering({
+        model: VQA_MODEL,
+        inputs: {
+          question: question,
+          image: req.file.buffer,
+        },
+      });
 
-    if (ocrText) messages.push({ role: 'user', content: `OCR_TEXT:\n${ocrText}` });
-    messages.push({ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:${req.file.mimetype};base64,${fileBase64}` } }] });
+      // The response is often a string containing the JSON.
+      const content = hfResponse?.[0]?.generated_text || '';
+      if (!content) throw new Error('Empty response from Hugging Face model');
 
-      logger.info(`Attempting to use OpenAI model: ${process.env.OPENAI_MODEL || 'gpt-4o'}`);
-    const resp = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-4o',
-      max_tokens: 4096,
-      messages: messages
-    }, {
-      headers: {
-        'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
+      let extracted;
+      try {
+        // Find the JSON block within the potentially messy string response
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          extracted = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('No JSON object found in the model response.');
+        }
+      } catch (e) {
+        logger.error('Failed to parse JSON from Hugging Face response', { content, error: e.message });
+        throw new Error('Could not understand the response from the AI model.');
       }
-    });
 
-      const content = resp.data?.choices?.[0]?.message?.content;
-    if (!content) throw new Error('Empty response from model');
-
-    let extracted;
-    try {
-      extracted = JSON.parse(content);
-    } catch (e) {
-      // If model returned text but not strict JSON, wrap in a best-effort parse
-      // Try to find JSON substring
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) extracted = JSON.parse(jsonMatch[0]);
-      else throw e;
-    }
-
-    // Normalize output minimally
-    extracted.assignments = (extracted.assignments || []).map(a => ({ ...a }));
-    extracted.courses = (extracted.courses || []).filter(c => c?.name).map(c => ({ ...c }));
+      // Normalize output minimally
+      extracted.assignments = (extracted.assignments || []).map(a => ({ ...a }));
+      extracted.courses = (extracted.courses || []).filter(c => c?.name).map(c => ({ ...c }));
 
     // Persist extracted data to DB for the authenticated user (if available and allowed)
     try {
@@ -166,12 +166,12 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
           // Save draft server-side and return draftId so client can finalize after auth
           try {
             const draftId = env.REDIS_URL ? await saveDraft(extracted) : null;
-            const response = { status: 'success', source: 'gpt-4-vision', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' };
+            const response = { status: 'success', source: 'huggingface-llava', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' };
             if (draftId) response['draftId'] = draftId;
             return res.json(response);
           } catch (err) {
             logger?.warn('Failed to save anonymous draft', { err: err?.message || err });
-            return res.json({ status: 'success', source: 'gpt-4-vision', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' });
+            return res.json({ status: 'success', source: 'huggingface-llava', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' });
           }
         }
         throw new Error('Unable to determine user id from auth');
@@ -214,12 +214,12 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
       }
 
       // Return both extracted and saved records
-      res.json({ status: 'success', source: 'gpt-4-vision', data: extracted, saved: { courses: savedCourses, assignments: savedAssignments } });
+      res.json({ status: 'success', source: 'huggingface-llava', data: extracted, saved: { courses: savedCourses, assignments: savedAssignments } });
       return;
     } catch (saveErr) {
       logger?.warn('Failed to persist extracted onboarding data', { err: saveErr?.message || saveErr });
       // Still return extracted data but inform client persistence failed
-      res.json({ status: 'success', source: 'gpt-4-vision', data: extracted, saved: { courses: [], assignments: [] }, warning: 'Failed to persist data' });
+      res.json({ status: 'success', source: 'huggingface-llava', data: extracted, saved: { courses: [], assignments: [] }, warning: 'Failed to persist data' });
       return;
     }
     } finally {

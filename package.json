@@ -18,6 +18,7 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@huggingface/inference": "^4.10.0",
     "@supabase/supabase-js": "^2.56.1",
     "axios": "^1.12.2",
     "base-64": "^1.0.0",
