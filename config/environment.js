@@ -78,6 +78,7 @@ export const env = {
   port: process.env.PORT || 3000,
   MONGODB_URI: process.env.MONGODB_URI,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    HF_API_TOKEN: process.env.HF_API_TOKEN || null,
   sessionSecret: process.env.SESSION_SECRET,
   // Maximum payload size accepted by express.json / urlencoded. Accepts values like '10mb', '50mb'
   maxFileSize: process.env.MAX_FILE_SIZE || '50mb',
