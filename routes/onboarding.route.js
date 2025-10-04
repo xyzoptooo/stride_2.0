@@ -16,6 +16,11 @@ const hf = env.HF_API_TOKEN ? new HfInference(env.HF_API_TOKEN) : null;
 // Use a DocVQA-style model that is commonly hosted on the HF Inference API.
 // Donut (naver-clova-ix) is a good fit for document-to-structured-text tasks.
 const VQA_MODEL = 'naver-clova-ix/donut-base-finetuned-docvqa';
+// A text-only fallback model (used when a VQA/image provider isn't available for the
+// user's account). We will pass the OCR text to this model and ask it to produce the
+// same JSON output. This avoids requiring an image inference provider but still
+// depends on a text inference provider being available.
+const TEXT_FALLBACK_MODEL = 'google/flan-t5-large';
 
 const router = express.Router();
 
@@ -127,18 +132,58 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
       const question = `Based on the provided syllabus image, extract all courses, assignments, and important dates. Return the information as a single, clean JSON object with three keys: "courses", "assignments", and "importantDates". The "courses" key should be an array of objects, each with "name", "code", and "professor" properties. The "assignments" key should be an array of objects, each with "title", "dueDate" (in YYYY-MM-DD format), and "course" properties. The "importantDates" key should be an array of objects with "title" and "date" (YYYY-MM-DD). If a value is not found, use null. Do not include any explanatory text outside of the JSON object.`;
 
       logger.info(`Attempting to use Hugging Face VQA model: ${VQA_MODEL}`);
-      
-      const hfResponse = await hf.visualQuestionAnswering({
-        model: VQA_MODEL,
-        inputs: {
-          question: question,
-          image: req.file.buffer,
-        },
-      });
 
-      // The response is often a string containing the JSON.
-      const content = hfResponse?.[0]?.generated_text || '';
-      if (!content) throw new Error('Empty response from Hugging Face model');
+      let content = '';
+      try {
+        const hfResponse = await hf.visualQuestionAnswering({
+          model: VQA_MODEL,
+          inputs: {
+            question: question,
+            image: req.file.buffer,
+          },
+        });
+        // The response is often a string containing the JSON.
+        content = hfResponse?.[0]?.generated_text || hfResponse?.generated_text || '';
+        if (!content) throw new Error('Empty response from Hugging Face model');
+      } catch (hfErr) {
+        // If the error indicates no inference provider is available for the requested
+        // image model, attempt a fallback that uses OCR text + a text-generation model.
+        const msg = (hfErr && (hfErr.message || hfErr.err || String(hfErr))) || 'Unknown HF error';
+        logger?.warn('Hugging Face visualQuestionAnswering failed', { err: msg });
+        if (/No Inference Provider available/i.test(msg) || /provider/i.test(msg)) {
+          logger.info('Falling back to text-only model using OCR output');
+          // Prepare OCR text for prompt (truncate to avoid overly long inputs)
+          const ocrForPrompt = (ocrText || '').slice(0, 15000);
+          const textPrompt = `You are given the extracted text from a syllabus document.\n\n` +
+            `Text:\n${ocrForPrompt}\n\n` +
+            `${question}`;
+
+          try {
+            const textResp = await hf.textGeneration({
+              model: TEXT_FALLBACK_MODEL,
+              inputs: textPrompt,
+            });
+            // textGeneration can return an array or object depending on provider
+            content = textResp?.[0]?.generated_text || textResp?.generated_text || String(textResp || '');
+            if (!content) throw new Error('Empty response from text fallback model');
+          } catch (textErr) {
+            const tmsg = (textErr && (textErr.message || String(textErr))) || 'Unknown text-fallback error';
+            logger?.error('Text-fallback model failed', { err: tmsg });
+            // As a last resort, return OCR-only results so the frontend can at least show
+            // extracted text for manual review. Provide a helpful warning so the operator
+            // can configure HF inference providers or use an API token with providers.
+            return res.json({
+              status: 'success',
+              source: 'ocr-only',
+              data: { ocrText, courses: [], assignments: [] },
+              warning: 'AI inference providers unavailable for both image and text models. Please configure inference providers at https://hf.co/settings/inference-providers or use a supported token.'
+            });
+          }
+        } else {
+          // Unknown HF error - rethrow to be handled by outer catch
+          throw hfErr;
+        }
+      }
 
       let extracted;
       try {
