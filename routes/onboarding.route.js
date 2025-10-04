@@ -24,6 +24,68 @@ const TEXT_FALLBACK_MODEL = 'google/flan-t5-large';
 
 const router = express.Router();
 
+// Simple heuristic parser to extract course-like and date-like items from OCR text.
+// It's intentionally conservative: returns an array of courses and assignments with
+// best-effort fields (name, code, professor, title, dueDate). This helps provide
+// usable data when AI inference providers are unavailable.
+function parseFromOcrText(ocrText) {
+  const lines = (ocrText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const courses = [];
+  const assignments = [];
+  const importantDates = [];
+
+  const dateRegex = /(\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b)|(\b\d{4}[\-]\d{2}[\-]\d{2}\b)|(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})/i;
+  const courseCodeRegex = /([A-Z]{2,4}\s?-?\s?\d{3,4})/;
+
+  for (const line of lines.slice(0, 200)) {
+    // Try to detect course lines like "CS 101 - Intro to Programming - Prof. X"
+    if (courseCodeRegex.test(line) && /\b(prof|professor|dr\.|dr\b|lecturer)\b/i.test(line)) {
+      const codeMatch = line.match(courseCodeRegex);
+      const code = codeMatch ? codeMatch[0].replace(/\s+/g, '') : null;
+      const name = line.replace(codeMatch ? codeMatch[0] : '', '').replace(/[-–—]/g, ' ').replace(/\b(prof|professor|dr\.|dr\b|lecturer)\b.*/i, '').trim();
+      const profMatch = line.match(/(Prof\.?|Professor|Dr\.|Dr)\s+([A-Za-z .]+)/i);
+      const professor = profMatch ? profMatch[2].trim() : null;
+      courses.push({ name: name || null, code: code || null, professor });
+      continue;
+    }
+
+    // Detect assignment-like lines that include words like "due" or "deadline"
+    if (/\b(due date|due|deadline)\b/i.test(line)) {
+      const dateMatch = line.match(dateRegex);
+      const dueDate = dateMatch ? (new Date(dateMatch[0]).toISOString().slice(0,10)) : null;
+      const title = line.replace(/\b(due date|due|deadline)[:\-]?/i, '').replace(dateRegex, '').trim() || null;
+      assignments.push({ title, dueDate, course: null });
+      continue;
+    }
+
+    // Generic important date detection
+    if (dateRegex.test(line) && /\b(holiday|exam|exam\s+week|start|end|deadline|due)\b/i.test(line)) {
+      const m = line.match(dateRegex);
+      const date = m ? (new Date(m[0]).toISOString().slice(0,10)) : null;
+      importantDates.push({ title: line.replace(dateRegex, '').trim() || 'Important date', date });
+      continue;
+    }
+
+    // If a line looks like a course name (has words like "Introduction" or "Intro" or "101")
+    if (/\b(Intro|Introduction|Seminar|Lab|101|102|201|202)\b/i.test(line) && line.length < 80) {
+      courses.push({ name: line, code: null, professor: null });
+      continue;
+    }
+  }
+
+  // Deduplicate course names
+  const seen = new Set();
+  const uniqCourses = [];
+  for (const c of courses) {
+    const key = (c.name || '') + '||' + (c.code || '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqCourses.push(c);
+  }
+
+  return { courses: uniqCourses, assignments, importantDates };
+}
+
 // memory storage
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 12 * 1024 * 1024 } });
@@ -121,12 +183,12 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
           const pdfParse = await import('pdf-parse');
           const pdfData = await pdfParse.default(req.file.buffer);
           const text = pdfData.text || '';
-          const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean).slice(0, 30);
-          const courses = lines.map(l => ({ name: l, code: null, professor: null }));
-          return res.json({ status: 'success', source: 'local-fallback', data: { courses, assignments: [] } });
+          const parsed = parseFromOcrText(text);
+          return res.json({ status: 'success', source: 'local-fallback', data: parsed });
         }
-        // For images, return any OCR text so frontend can show it
-        return res.json({ status: 'success', source: 'ocr-only', data: { ocrText, courses: [], assignments: [] } });
+        // For images, return parsed OCR text so frontend can show structured suggestions
+        const parsed = parseFromOcrText(ocrText);
+        return res.json({ status: 'success', source: 'ocr-only', data: parsed, note: 'ocr-fallback' });
       }
 
       const question = `Based on the provided syllabus image, extract all courses, assignments, and important dates. Return the information as a single, clean JSON object with three keys: "courses", "assignments", and "importantDates". The "courses" key should be an array of objects, each with "name", "code", and "professor" properties. The "assignments" key should be an array of objects, each with "title", "dueDate" (in YYYY-MM-DD format), and "course" properties. The "importantDates" key should be an array of objects with "title" and "date" (YYYY-MM-DD). If a value is not found, use null. Do not include any explanatory text outside of the JSON object.`;
