@@ -13,7 +13,9 @@ import { globalSemaphore } from '../utils/concurrency.js';
 import { HfInference } from '@huggingface/inference';
 
 const hf = env.HF_API_TOKEN ? new HfInference(env.HF_API_TOKEN) : null;
-const VQA_MODEL = 'llava-hf/llava-1.5-7b-hf';
+// Use a DocVQA-style model that is commonly hosted on the HF Inference API.
+// Donut (naver-clova-ix) is a good fit for document-to-structured-text tasks.
+const VQA_MODEL = 'naver-clova-ix/donut-base-finetuned-docvqa';
 
 const router = express.Router();
 
