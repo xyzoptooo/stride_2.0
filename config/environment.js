@@ -79,6 +79,8 @@ export const env = {
   MONGODB_URI: process.env.MONGODB_URI,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     HF_API_TOKEN: process.env.HF_API_TOKEN || null,
+  // OCR.space API key (optional). Provide via environment - do NOT commit keys to repo.
+  OCR_SPACE_API_KEY: process.env.OCR_SPACE_API_KEY || null,
   sessionSecret: process.env.SESSION_SECRET,
   // Maximum payload size accepted by express.json / urlencoded. Accepts values like '10mb', '50mb'
   maxFileSize: process.env.MAX_FILE_SIZE || '50mb',

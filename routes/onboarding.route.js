@@ -10,17 +10,8 @@ import { logger } from '../utils/logger.js';
 import { saveDraft, getDraft, deleteDraft } from '../utils/draftStore.js';
 import rateLimit from 'express-rate-limit';
 import { globalSemaphore } from '../utils/concurrency.js';
-import { HfInference } from '@huggingface/inference';
-
-const hf = env.HF_API_TOKEN ? new HfInference(env.HF_API_TOKEN) : null;
-// Use a DocVQA-style model that is commonly hosted on the HF Inference API.
-// Donut (naver-clova-ix) is a good fit for document-to-structured-text tasks.
-const VQA_MODEL = 'naver-clova-ix/donut-base-finetuned-docvqa';
-// A text-only fallback model (used when a VQA/image provider isn't available for the
-// user's account). We will pass the OCR text to this model and ask it to produce the
-// same JSON output. This avoids requiring an image inference provider but still
-// depends on a text inference provider being available.
-const TEXT_FALLBACK_MODEL = 'google/flan-t5-large';
+// Load OCR.space API key from exported env only (ensure it's set in environment/config)
+const OCR_SPACE_API_KEY = env.OCR_SPACE_API_KEY || null;
 
 const router = express.Router();
 
@@ -154,185 +145,115 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    // Acquire a slot in the global semaphore to limit concurrent OCR/OpenAI calls
+    // Acquire a slot in the global semaphore to limit concurrent OCR calls
     const release = await globalSemaphore.acquire();
     try {
-      // run OCR for images using shared worker
-      let ocrText = '';
-      if (req.file.mimetype && req.file.mimetype.startsWith('image/')) {
-        try {
-          ocrText = await recognizeBuffer(req.file.buffer);
-        } catch (e) {
-          // recognizeBuffer already logs; bubble up only if it's a fatal worker error
-          logger?.warn('OCR error in onboarding route', { err: e?.message || e });
-          // If OCR subsystem is broken/unavailable, return a 503 so clients can retry later
-          if (e && /OCR worker marked as broken|worker\.load is not a function|langsArr\.map is not a function/i.test(e?.message || '')) {
-            return res.status(503).json({ error: 'OCR service currently unavailable, please try again later' });
-          }
-          ocrText = '';
-        }
-      }
-
+      // Attempt to build parsedText using OCR.space (if key present) or local OCR
+      let parsedText = '';
       const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
 
-      // If HF_API_TOKEN is not set, we can't proceed with AI processing.
-      if (!hf) {
-        logger.warn('HF_API_TOKEN not set. Skipping AI processing.');
-        // Fallback to simple parsers if AI is not configured
-        if (req.file.mimetype === 'application/pdf') {
-          const pdfParse = await import('pdf-parse');
-          const pdfData = await pdfParse.default(req.file.buffer);
-          const text = pdfData.text || '';
-          const parsed = parseFromOcrText(text);
-          return res.json({ status: 'success', source: 'local-fallback', data: parsed });
-        }
-        // For images, return parsed OCR text so frontend can show structured suggestions
-        const parsed = parseFromOcrText(ocrText);
-        return res.json({ status: 'success', source: 'ocr-only', data: parsed, note: 'ocr-fallback' });
-      }
-
-      const question = `Based on the provided syllabus image, extract all courses, assignments, and important dates. Return the information as a single, clean JSON object with three keys: "courses", "assignments", and "importantDates". The "courses" key should be an array of objects, each with "name", "code", and "professor" properties. The "assignments" key should be an array of objects, each with "title", "dueDate" (in YYYY-MM-DD format), and "course" properties. The "importantDates" key should be an array of objects with "title" and "date" (YYYY-MM-DD). If a value is not found, use null. Do not include any explanatory text outside of the JSON object.`;
-
-      logger.info(`Attempting to use Hugging Face VQA model: ${VQA_MODEL}`);
-
-      let content = '';
-      try {
-        const hfResponse = await hf.visualQuestionAnswering({
-          model: VQA_MODEL,
-          inputs: {
-            question: question,
-            image: req.file.buffer,
-          },
-        });
-        // The response is often a string containing the JSON.
-        content = hfResponse?.[0]?.generated_text || hfResponse?.generated_text || '';
-        if (!content) throw new Error('Empty response from Hugging Face model');
-      } catch (hfErr) {
-        // If the error indicates no inference provider is available for the requested
-        // image model, attempt a fallback that uses OCR text + a text-generation model.
-        const msg = (hfErr && (hfErr.message || hfErr.err || String(hfErr))) || 'Unknown HF error';
-        logger?.warn('Hugging Face visualQuestionAnswering failed', { err: msg });
-        if (/No Inference Provider available/i.test(msg) || /provider/i.test(msg)) {
-          logger.info('Falling back to text-only model using OCR output');
-          // Prepare OCR text for prompt (truncate to avoid overly long inputs)
-          const ocrForPrompt = (ocrText || '').slice(0, 15000);
-          const textPrompt = `You are given the extracted text from a syllabus document.\n\n` +
-            `Text:\n${ocrForPrompt}\n\n` +
-            `${question}`;
-
+      if (req.file.mimetype && req.file.mimetype.startsWith('image/')) {
+        if (OCR_SPACE_API_KEY) {
           try {
-            const textResp = await hf.textGeneration({
-              model: TEXT_FALLBACK_MODEL,
-              inputs: textPrompt,
+            const params = new URLSearchParams();
+            params.append('apikey', OCR_SPACE_API_KEY);
+            params.append('language', 'eng');
+            params.append('isOverlayRequired', 'false');
+            params.append('base64Image', `data:${req.file.mimetype};base64,${fileBase64}`);
+            const resp = await axios.post('https://api.ocr.space/parse/image', params.toString(), {
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              timeout: 60000,
             });
-            // textGeneration can return an array or object depending on provider
-            content = textResp?.[0]?.generated_text || textResp?.generated_text || String(textResp || '');
-            if (!content) throw new Error('Empty response from text fallback model');
-          } catch (textErr) {
-            const tmsg = (textErr && (textErr.message || String(textErr))) || 'Unknown text-fallback error';
-            logger?.error('Text-fallback model failed', { err: tmsg });
-            // As a last resort, return OCR-only results so the frontend can at least show
-            // extracted text for manual review. Provide a helpful warning so the operator
-            // can configure HF inference providers or use an API token with providers.
-            return res.json({
-              status: 'success',
-              source: 'ocr-only',
-              data: { ocrText, courses: [], assignments: [] },
-              warning: 'AI inference providers unavailable for both image and text models. Please configure inference providers at https://hf.co/settings/inference-providers or use a supported token.'
-            });
+            if (resp?.data?.IsErroredOnProcessing) {
+              logger?.warn('OCR.space reported an error', { err: resp.data.ErrorMessage || resp.data.ErrorDetails });
+              parsedText = await recognizeBuffer(req.file.buffer);
+            } else {
+              const parsed = resp.data.ParsedResults || [];
+              parsedText = parsed.map(p => p.ParsedText || '').filter(Boolean).join('\n');
+            }
+          } catch (ocrErr) {
+            logger?.warn('OCR.space request failed, falling back to local OCR', { err: ocrErr?.message || ocrErr });
+            parsedText = await recognizeBuffer(req.file.buffer);
           }
         } else {
-          // Unknown HF error - rethrow to be handled by outer catch
-          throw hfErr;
+          parsedText = await recognizeBuffer(req.file.buffer);
         }
+      } else if (req.file.mimetype === 'application/pdf') {
+        const pdfParse = await import('pdf-parse');
+        const pdfData = await pdfParse.default(req.file.buffer);
+        parsedText = pdfData.text || '';
+      } else {
+        parsedText = await recognizeBuffer(req.file.buffer).catch(() => '');
       }
 
-      let extracted;
+      const extracted = parseFromOcrText(parsedText || '');
+
+      // Persist extracted data to DB for the authenticated user (if available and allowed)
       try {
-        // Find the JSON block within the potentially messy string response
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          extracted = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error('No JSON object found in the model response.');
-        }
-      } catch (e) {
-        logger.error('Failed to parse JSON from Hugging Face response', { content, error: e.message });
-        throw new Error('Could not understand the response from the AI model.');
-      }
+        const supabaseId = req.user?.id || req.user?.sub || req.user?.user?.id;
 
-      // Normalize output minimally
-      extracted.assignments = (extracted.assignments || []).map(a => ({ ...a }));
-      extracted.courses = (extracted.courses || []).filter(c => c?.name).map(c => ({ ...c }));
-
-    // Persist extracted data to DB for the authenticated user (if available and allowed)
-    try {
-      const supabaseId = req.user?.id || req.user?.sub || req.user?.user?.id;
-
-      // If no supabaseId found (anonymous) and anon onboarding allowed, return extracted data
-      if (!supabaseId) {
-        if (env.allowAnonOnboarding) {
-          // Save draft server-side and return draftId so client can finalize after auth
-          try {
-            const draftId = env.REDIS_URL ? await saveDraft(extracted) : null;
-            const response = { status: 'success', source: 'huggingface-llava', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' };
-            if (draftId) response['draftId'] = draftId;
-            return res.json(response);
-          } catch (err) {
-            logger?.warn('Failed to save anonymous draft', { err: err?.message || err });
-            return res.json({ status: 'success', source: 'huggingface-llava', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' });
+        // If no supabaseId found (anonymous) and anon onboarding allowed, return extracted data
+        if (!supabaseId) {
+          if (env.allowAnonOnboarding) {
+            try {
+              const draftId = env.REDIS_URL ? await saveDraft(extracted) : null;
+              const response = { status: 'success', source: 'ocr-space', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' };
+              if (draftId) response['draftId'] = draftId;
+              return res.json(response);
+            } catch (err) {
+              logger?.warn('Failed to save anonymous draft', { err: err?.message || err });
+              return res.json({ status: 'success', source: 'ocr-space', data: extracted, saved: { courses: [], assignments: [] }, note: 'anonymous-preview' });
+            }
           }
+          throw new Error('Unable to determine user id from auth');
         }
-        throw new Error('Unable to determine user id from auth');
-      }
 
-      // Upsert courses (avoid duplicates)
-      const semester = getCurrentSemester();
-      const savedCourses = [];
-      for (const c of extracted.courses) {
-        const name = (c.name || '').trim();
-        if (!name) continue;
-        const update = {
-          supabaseId,
-          name,
-          professor: c.professor || null,
-          credits: c.credits || null,
-          schedule: c.schedule ? JSON.stringify(c.schedule) : c.schedule || null,
-          progress: 0,
-          semester
-        };
-        const saved = await Course.findOneAndUpdate({ supabaseId, name, semester }, update, { upsert: true, new: true, setDefaultsOnInsert: true });
-        savedCourses.push(saved);
-      }
+        // Upsert courses (avoid duplicates)
+        const semester = getCurrentSemester();
+        const savedCourses = [];
+        for (const c of extracted.courses || []) {
+          const name = (c.name || '').trim();
+          if (!name) continue;
+          const update = {
+            supabaseId,
+            name,
+            professor: c.professor || null,
+            credits: c.credits || null,
+            schedule: c.schedule ? JSON.stringify(c.schedule) : c.schedule || null,
+            progress: 0,
+            semester
+          };
+          const saved = await Course.findOneAndUpdate({ supabaseId, name, semester }, update, { upsert: true, new: true, setDefaultsOnInsert: true });
+          savedCourses.push(saved);
+        }
 
-      // Create assignments
-      const savedAssignments = [];
-      for (const a of extracted.assignments || []) {
-        if (!a.title) continue;
-        const due = a.dueDate ? new Date(a.dueDate) : null;
-        const assignmentDoc = new Assignment({
-          supabaseId,
-          title: a.title,
-          course: a.course || a.courseCode || null,
-          dueDate: due,
-          progress: 0,
-          notes: a.description || null
-        });
-        const savedA = await assignmentDoc.save();
-        savedAssignments.push(savedA);
-      }
+        // Create assignments
+        const savedAssignments = [];
+        for (const a of extracted.assignments || []) {
+          if (!a.title) continue;
+          const due = a.dueDate ? new Date(a.dueDate) : null;
+          const assignmentDoc = new Assignment({
+            supabaseId,
+            title: a.title,
+            course: a.course || a.courseCode || null,
+            dueDate: due,
+            progress: 0,
+            notes: a.description || null
+          });
+          const savedA = await assignmentDoc.save();
+          savedAssignments.push(savedA);
+        }
 
-      // Return both extracted and saved records
-      res.json({ status: 'success', source: 'huggingface-llava', data: extracted, saved: { courses: savedCourses, assignments: savedAssignments } });
-      return;
-    } catch (saveErr) {
-      logger?.warn('Failed to persist extracted onboarding data', { err: saveErr?.message || saveErr });
-      // Still return extracted data but inform client persistence failed
-      res.json({ status: 'success', source: 'huggingface-llava', data: extracted, saved: { courses: [], assignments: [] }, warning: 'Failed to persist data' });
-      return;
-    }
+        // Return both extracted and saved records
+        res.json({ status: 'success', source: 'ocr-space', data: extracted, saved: { courses: savedCourses, assignments: savedAssignments } });
+        return;
+      } catch (saveErr) {
+        logger?.warn('Failed to persist extracted onboarding data', { err: saveErr?.message || saveErr });
+        // Still return extracted data but inform client persistence failed
+        res.json({ status: 'success', source: 'ocr-space', data: extracted, saved: { courses: [], assignments: [] }, warning: 'Failed to persist data' });
+        return;
+      }
     } finally {
-      // ensure we always release the semaphore slot
       try { release(); } catch (e) { /* noop */ }
     }
   } catch (err) {
@@ -340,8 +261,6 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
     res.status(500).json({ error: 'Failed to process onboarding document', details: err?.message || '' });
   }
 });
-
-export default router;
 
 // Finalize endpoint - accepts parsed JSON for persistence and requires authentication
 router.post('/finalize', authenticate, async (req, res) => {
@@ -402,3 +321,5 @@ router.post('/finalize', authenticate, async (req, res) => {
     res.status(500).json({ error: 'Failed to finalize onboarding' });
   }
 });
+
+export default router;
