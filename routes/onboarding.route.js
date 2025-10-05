@@ -20,7 +20,49 @@ const router = express.Router();
 // best-effort fields (name, code, professor, title, dueDate). This helps provide
 // usable data when AI inference providers are unavailable.
 function parseFromOcrText(ocrText) {
-  const lines = (ocrText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  // Basic normalization and cleanup of raw OCR text to reduce noise
+  const cleanup = (s = '') => {
+    let line = s.replace(/\r/g, '');
+    // Remove common day abbreviations and stray ampersands/connector words
+    line = line.replace(/\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '');
+    line = line.replace(/\b(?:am|pm|a\.m\.|p\.m\.|m)\b/gi, '');
+    // Remove simple time ranges like 10-1, 10:00-13:00, 10 - 1 etc.
+    line = line.replace(/\b\d{1,2}[:\.\-]\d{1,2}(?:[:\.\-]\d{1,2})?\b/g, '');
+    line = line.replace(/\b\d{1,2}\s*[-–—]\s*\d{1,2}\b/g, '');
+    // Collapse obvious OCR split letter patterns: 'O perations' -> 'Operations'
+    // Merge a single leading letter followed by space into the following word when it looks like a split
+    line = line.replace(/\b([A-Za-z])\s+([a-z]{2,})/g, '$1$2');
+    // Remove stray connectors like '&' that may split titles
+    line = line.replace(/[&]/g, ' ');
+    // Remove extra punctuation often introduced by OCR
+    line = line.replace(/["'\*\|\^\+\=\_<\>]/g, ' ');
+    // Normalize repeated adjacent words: 'Computer Computer' -> 'Computer'
+    line = line.replace(/\b(\w+)\s+\1\b/gi, '$1');
+    // Trim and collapse spaces
+    return line.replace(/\s{2,}/g, ' ').trim();
+  };
+
+  // Split and normalize lines, skipping empty results
+  let lines = (ocrText || '').split(/\r?\n/).map(l => cleanup(l)).filter(Boolean);
+
+  // Merge short adjacent lines that likely belong together (e.g., 'Computer' + 'Graphics' -> 'Computer Graphics')
+  const merged = [];
+  for (let i = 0; i < lines.length; i++) {
+    const cur = lines[i];
+    const next = lines[i + 1];
+    // If both are short (<=3 words) and both are not clearly location strings, merge them
+    if (next && cur.split(/\s+/).length <= 3 && next.split(/\s+/).length <= 3) {
+      // Avoid merging when lines look like codes
+      if (!/\b[A-Z]{2,4}\s?-?\s?\d{3,4}\b/.test(cur) && !/\b[A-Z]{2,4}\s?-?\s?\d{3,4}\b/.test(next)) {
+        merged.push(`${cur} ${next}`.trim());
+        i++; // skip next
+        continue;
+      }
+    }
+    merged.push(cur);
+  }
+  lines = merged.slice(0, 200);
+
   const courses = [];
   const assignments = [];
   const importantDates = [];
@@ -28,17 +70,13 @@ function parseFromOcrText(ocrText) {
   const dateRegex = /(\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b)|(\b\d{4}[\-]\d{2}[\-]\d{2}\b)|(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})/i;
   const courseCodeRegex = /([A-Z]{2,4}\s?-?\s?\d{3,4})/;
   const bitCodeRegex = /(BIT\s?-?\s?\d{3,4})/i;
-  const locationOnlyRegex = /\b(HALL|LAB|FLT|ROOM|BL|CC|IT LAB|ITLAB)\b/i;
+  const locationOnlyRegex = /\b(HALL|LAB|FLT|ROOM|BL|CC|IT LAB|ITLAB|LECTURE|VENUE)\b/i;
 
-  // Work on a limited slice to avoid pathological long OCR outputs
-  const raw = lines.slice(0, 200);
+  // First pass: detect codes and name candidates
+  const entries = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
 
-  // First pass: collect detected code lines and standalone name candidates with their indices
-  const entries = []; // { index, code|null, name|null, raw }
-  for (let i = 0; i < raw.length; i++) {
-    const line = raw[i];
-
-    // Assignment / date handling (preserve existing behaviour)
     if (/\b(due date|due|deadline)\b/i.test(line)) {
       const dateMatch = line.match(dateRegex);
       const dueDate = dateMatch ? (new Date(dateMatch[0]).toISOString().slice(0, 10)) : null;
@@ -53,39 +91,46 @@ function parseFromOcrText(ocrText) {
       continue;
     }
 
-    // Detect course code (prefer BIT but accept generic code patterns)
     const codeMatch = line.match(bitCodeRegex) || line.match(courseCodeRegex);
     if (codeMatch) {
       let codeRaw = codeMatch[0] || '';
       let code = codeRaw.replace(/\s+/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-      // Extract any inline name text after the code
       let name = line.replace(codeMatch[0], '').replace(/[-–—:]/g, ' ').trim();
-      // If name is missing, peek at next non-location line
-      if ((!name || name.length < 3) && raw[i + 1] && !locationOnlyRegex.test(raw[i + 1]) && raw[i + 1].length < 80) {
-        name = raw[i + 1];
+      if ((!name || name.length < 3) && lines[i + 1] && !locationOnlyRegex.test(lines[i + 1]) && lines[i + 1].length < 120) {
+        name = lines[i + 1];
+      }
+      if (name) {
+        // remove duplicated words inside the name and normalize
+        const words = name.split(/\s+/).filter(Boolean);
+        const uniqueWords = [];
+        const seen = new Set();
+        for (const w of words) {
+          const lw = w.toLowerCase();
+          if (seen.has(lw)) continue;
+          seen.add(lw);
+          uniqueWords.push(w);
+        }
+        name = uniqueWords.join(' ');
       }
       entries.push({ index: i, code, name: name || null, raw: line });
       continue;
     }
 
-    // Heuristic: if line looks like a course title (keywords or multiple capitalized words)
-    if (!locationOnlyRegex.test(line) && line.length > 2 && line.length < 100) {
-      // avoid adding trivial single-character tokens
+    // Name candidate
+    if (!locationOnlyRegex.test(line) && line.length > 2 && line.length < 120) {
       const wordCount = line.split(/\s+/).length;
-      // consider as name-candidate when it has at least 2 words or matches known keywords
-      if (wordCount >= 2 || /\b(Intro|Introduction|Seminar|Lab|Mobile|Computing|Network|Management|Graphics|Computer)\b/i.test(line)) {
+      if (wordCount >= 2 || /\b(Intro|Introduction|Seminar|Lab|Mobile|Computing|Network|Management|Graphics|Computer|Operations)\b/i.test(line)) {
         entries.push({ index: i, code: null, name: line, raw: line });
         continue;
       }
     }
   }
 
-  // Second pass: associate nearby names with codes and consolidate
-  const byCode = new Map(); // code -> { code, name, index }
+  // Consolidate codes and name-only entries
+  const byCode = new Map();
   const nameOnly = [];
   for (const e of entries) {
     if (e.code) {
-      // prefer the first non-location name we can find for this code
       const existing = byCode.get(e.code) || { code: e.code, name: null, index: e.index };
       if (!existing.name && e.name && !locationOnlyRegex.test(e.name)) existing.name = e.name;
       byCode.set(e.code, existing);
@@ -94,38 +139,45 @@ function parseFromOcrText(ocrText) {
     }
   }
 
-  // Try to pair name-only entries with nearest code within +/-1 lines (or next line)
+  // Pair name-only entries to nearest code within +/-2 lines
   for (const n of nameOnly) {
-    // find any code whose index is close
     let paired = false;
     for (const [code, obj] of byCode.entries()) {
-      if (Math.abs(obj.index - n.index) <= 1) {
-        // if code has no name, attach this name; otherwise, prefer existing name but consider combining
+      if (Math.abs(obj.index - n.index) <= 2) {
         if (!obj.name) obj.name = n.name;
-        else if (obj.name && obj.name !== n.name) obj.name = `${obj.name} ${n.name}`.trim();
+        else if (obj.name && obj.name !== n.name) {
+          // merge unique words
+          const merged = `${obj.name} ${n.name}`.split(/\s+/).filter(Boolean);
+          const uniq = [];
+          const seen = new Set();
+          for (const w of merged) {
+            const lw = w.toLowerCase();
+            if (seen.has(lw)) continue;
+            seen.add(lw);
+            uniq.push(w);
+          }
+          obj.name = uniq.join(' ');
+        }
         paired = true;
         break;
       }
     }
     if (!paired) {
-      // hold as standalone course candidate
       courses.push({ name: n.name, code: null, professor: null });
     }
   }
 
   // Move byCode entries into courses
   for (const obj of byCode.values()) {
-    // Filter out entries that are just locations
     if (!obj.name || locationOnlyRegex.test(obj.name)) {
       courses.push({ name: null, code: obj.code, professor: null });
     } else {
-      // Normalize multiple spaces
       const normalizedName = obj.name.replace(/\s{2,}/g, ' ').trim();
       courses.push({ name: normalizedName, code: obj.code, professor: null });
     }
   }
 
-  // Deduplicate: prefer entries with a code, then by normalized name
+  // Deduplicate: prefer entries with a code, then by normalized name (case-insensitive)
   const seenCodes = new Set();
   const seenNames = new Set();
   const uniqCourses = [];
@@ -133,14 +185,16 @@ function parseFromOcrText(ocrText) {
     if (c.code) {
       if (seenCodes.has(c.code)) continue;
       seenCodes.add(c.code);
-      // also mark the name as seen if present
       if (c.name) seenNames.add((c.name || '').toLowerCase());
       uniqCourses.push(c);
     } else if (c.name) {
-      const nkey = c.name.toLowerCase();
+      // normalize simple OCR artifacts inside name
+      let name = c.name.replace(/\s{2,}/g, ' ').trim();
+      name = name.replace(/\b(\w+)\s+\1\b/gi, '$1');
+      const nkey = name.toLowerCase();
       if (seenNames.has(nkey)) continue;
       seenNames.add(nkey);
-      uniqCourses.push(c);
+      uniqCourses.push({ name, code: null, professor: null });
     }
   }
 
