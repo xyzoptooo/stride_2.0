@@ -27,16 +27,28 @@ function parseFromOcrText(ocrText) {
 
   const dateRegex = /(\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b)|(\b\d{4}[\-]\d{2}[\-]\d{2}\b)|(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})/i;
   const courseCodeRegex = /([A-Z]{2,4}\s?-?\s?\d{3,4})/;
+  const bitCodeRegex = /(BIT\s?-?\s?\d{3,4})/i;
+  const locationOnlyRegex = /\b(HALL|LAB|FLT|ROOM|BL|CC)\b/i;
 
   for (const line of lines.slice(0, 200)) {
-    // Try to detect course lines like "CS 101 - Intro to Programming - Prof. X"
-    if (courseCodeRegex.test(line) && /\b(prof|professor|dr\.|dr\b|lecturer)\b/i.test(line)) {
-      const codeMatch = line.match(courseCodeRegex);
-      const code = codeMatch ? codeMatch[0].replace(/\s+/g, '') : null;
-      const name = line.replace(codeMatch ? codeMatch[0] : '', '').replace(/[-–—]/g, ' ').replace(/\b(prof|professor|dr\.|dr\b|lecturer)\b.*/i, '').trim();
-      const profMatch = line.match(/(Prof\.?|Professor|Dr\.|Dr)\s+([A-Za-z .]+)/i);
-      const professor = profMatch ? profMatch[2].trim() : null;
-      courses.push({ name: name || null, code: code || null, professor });
+    // Try to detect lines that start with a course code like BIT4102 or BIT 4201
+    const bitMatch = line.match(bitCodeRegex);
+    if (bitMatch) {
+      const code = bitMatch[0].replace(/\s+/g, '').toUpperCase();
+      // The course name may be on the same line after the code or on the next line
+      let name = line.replace(bitMatch[0], '').replace(/[-–—]/g, ' ').trim();
+      // peek at next line if name is empty and next line looks like title (not location)
+      const nextLine = lines[lines.indexOf(line) + 1];
+      if ((!name || name.length < 3) && nextLine && !locationOnlyRegex.test(nextLine) && nextLine.length < 80) {
+        name = nextLine;
+      }
+      // filter out lines that are actually room names e.g., "IT LAB V" or "FLT HALL B"
+      if (locationOnlyRegex.test(name) && name.length < 30) {
+        // push the code with null name but prefer later detection
+        courses.push({ name: null, code, professor: null });
+      } else {
+        courses.push({ name: name || null, code, professor: null });
+      }
       continue;
     }
 
@@ -57,8 +69,8 @@ function parseFromOcrText(ocrText) {
       continue;
     }
 
-    // If a line looks like a course name (has words like "Introduction" or "Intro" or "101")
-    if (/\b(Intro|Introduction|Seminar|Lab|101|102|201|202)\b/i.test(line) && line.length < 80) {
+    // If line looks like a course name (Intro/Introduction/Seminar) but not a location, capture it
+    if (/\b(Intro|Introduction|Seminar|Lab|Mobile|Computing|Network|Management|Graphics)\b/i.test(line) && line.length < 80 && !locationOnlyRegex.test(line)) {
       courses.push({ name: line, code: null, professor: null });
       continue;
     }
