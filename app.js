@@ -17,6 +17,7 @@ import { redisClient } from './utils/draftStore.js';
 import syllabusRoutes from './routes/syllabus.route.js';
 import courseRoutes from './routes/course.route.js';
 import onboardingRoutes from './routes/onboarding.route.js';
+import assignmentRoutes from './routes/assignment.route.js';
 // Import other routes...
 
 // Create Express app factory for testing
@@ -127,6 +128,7 @@ function createApp() {
   app.use('/api/syllabus', syllabusRoutes);
   app.use('/api/courses', courseRoutes);
   app.use('/api/onboarding', onboardingRoutes);
+  app.use('/api/assignments', assignmentRoutes);
   // Mount other routes...
 
   // Handle 404 errors
