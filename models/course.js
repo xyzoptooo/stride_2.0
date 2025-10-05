@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 const CourseSchema = new mongoose.Schema({
   supabaseId: { type: String, required: true },
   name: { type: String, required: true },
+  // optional official course code (e.g., BIT4102)
+  code: { type: String },
   professor: String,
   semester: String,
   credits: Number,

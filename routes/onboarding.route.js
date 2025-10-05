@@ -332,34 +332,57 @@ router.post('/import', maybeAuthenticate, uploadLimiter, upload.single('file'), 
           throw new Error('Unable to determine user id from auth');
         }
 
-        // Upsert courses (avoid duplicates)
+        // Upsert courses (avoid duplicates). Prefer matching by code when available.
         const semester = getCurrentSemester();
         const savedCourses = [];
         for (const c of extracted.courses || []) {
           const name = (c.name || '').trim();
-          if (!name) continue;
+          const code = (c.code || '').trim() || null;
+          if (!name && !code) continue;
+          const query = code ? { supabaseId, code, semester } : { supabaseId, name, semester };
           const update = {
             supabaseId,
-            name,
+            name: name || (code ? code : ''),
+            code: code || undefined,
             professor: c.professor || null,
             credits: c.credits || null,
             schedule: c.schedule ? JSON.stringify(c.schedule) : c.schedule || null,
             progress: 0,
             semester
           };
-          const saved = await Course.findOneAndUpdate({ supabaseId, name, semester }, update, { upsert: true, new: true, setDefaultsOnInsert: true });
+          const saved = await Course.findOneAndUpdate(query, update, { upsert: true, new: true, setDefaultsOnInsert: true });
           savedCourses.push(saved);
         }
 
-        // Create assignments
+        // Create assignments and try to link to saved course _id when possible
         const savedAssignments = [];
+        const courseByCode = new Map();
+        const courseByName = new Map();
+        for (const sc of savedCourses) {
+          if (sc.code) courseByCode.set((sc.code || '').toUpperCase().replace(/\s+/g, ''), sc);
+          if (sc.name) courseByName.set((sc.name || '').toLowerCase(), sc);
+        }
+
         for (const a of extracted.assignments || []) {
           if (!a.title) continue;
           const due = a.dueDate ? new Date(a.dueDate) : null;
+          let courseRef = null;
+          try {
+            const possibleCode = (a.course || a.courseCode || '').toString().toUpperCase().replace(/\s+/g, '');
+            if (possibleCode && courseByCode.has(possibleCode)) {
+              courseRef = courseByCode.get(possibleCode)._id.toString();
+            } else if (a.course) {
+              const nkey = a.course.toString().toLowerCase();
+              if (courseByName.has(nkey)) courseRef = courseByName.get(nkey)._id.toString();
+            }
+          } catch (e) {
+            // ignore
+          }
+
           const assignmentDoc = new Assignment({
             supabaseId,
             title: a.title,
-            course: a.course || a.courseCode || null,
+            course: courseRef || (a.course || a.courseCode) || null,
             dueDate: due,
             progress: 0,
             notes: a.description || null
@@ -424,13 +447,35 @@ router.post('/finalize', authenticate, async (req, res) => {
     }
 
     const savedAssignments = [];
+    // Map saved courses by code and name to attach assignments to course _id when possible
+    const courseByCode = new Map();
+    const courseByName = new Map();
+    for (const sc of savedCourses) {
+      if (sc.code) courseByCode.set((sc.code || '').toUpperCase().replace(/\s+/g, ''), sc);
+      if (sc.name) courseByName.set((sc.name || '').toLowerCase(), sc);
+    }
+
     for (const a of extracted.assignments || []) {
       if (!a.title) continue;
       const due = a.dueDate ? new Date(a.dueDate) : null;
+      // resolve assignment course to saved course _id when possible
+      let courseRef = null;
+      try {
+        const possibleCode = (a.course || a.courseCode || '').toString().toUpperCase().replace(/\s+/g, '');
+        if (possibleCode && courseByCode.has(possibleCode)) {
+          courseRef = courseByCode.get(possibleCode)._id.toString();
+        } else if (a.course) {
+          const nkey = a.course.toString().toLowerCase();
+          if (courseByName.has(nkey)) courseRef = courseByName.get(nkey)._id.toString();
+        }
+      } catch (e) {
+        // ignore resolution errors and leave courseRef null
+      }
+
       const assignmentDoc = new Assignment({
         supabaseId,
         title: a.title,
-        course: a.course || a.courseCode || null,
+        course: courseRef || (a.course || a.courseCode) || null,
         dueDate: due,
         progress: 0,
         notes: a.description || null
