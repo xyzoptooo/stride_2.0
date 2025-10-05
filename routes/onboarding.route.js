@@ -28,62 +28,120 @@ function parseFromOcrText(ocrText) {
   const dateRegex = /(\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b)|(\b\d{4}[\-]\d{2}[\-]\d{2}\b)|(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})/i;
   const courseCodeRegex = /([A-Z]{2,4}\s?-?\s?\d{3,4})/;
   const bitCodeRegex = /(BIT\s?-?\s?\d{3,4})/i;
-  const locationOnlyRegex = /\b(HALL|LAB|FLT|ROOM|BL|CC)\b/i;
+  const locationOnlyRegex = /\b(HALL|LAB|FLT|ROOM|BL|CC|IT LAB|ITLAB)\b/i;
 
-  for (const line of lines.slice(0, 200)) {
-    // Try to detect lines that start with a course code like BIT4102 or BIT 4201
-    const bitMatch = line.match(bitCodeRegex);
-    if (bitMatch) {
-      const code = bitMatch[0].replace(/\s+/g, '').toUpperCase();
-      // The course name may be on the same line after the code or on the next line
-      let name = line.replace(bitMatch[0], '').replace(/[-–—]/g, ' ').trim();
-      // peek at next line if name is empty and next line looks like title (not location)
-      const nextLine = lines[lines.indexOf(line) + 1];
-      if ((!name || name.length < 3) && nextLine && !locationOnlyRegex.test(nextLine) && nextLine.length < 80) {
-        name = nextLine;
-      }
-      // filter out lines that are actually room names e.g., "IT LAB V" or "FLT HALL B"
-      if (locationOnlyRegex.test(name) && name.length < 30) {
-        // push the code with null name but prefer later detection
-        courses.push({ name: null, code, professor: null });
-      } else {
-        courses.push({ name: name || null, code, professor: null });
-      }
-      continue;
-    }
+  // Work on a limited slice to avoid pathological long OCR outputs
+  const raw = lines.slice(0, 200);
 
-    // Detect assignment-like lines that include words like "due" or "deadline"
+  // First pass: collect detected code lines and standalone name candidates with their indices
+  const entries = []; // { index, code|null, name|null, raw }
+  for (let i = 0; i < raw.length; i++) {
+    const line = raw[i];
+
+    // Assignment / date handling (preserve existing behaviour)
     if (/\b(due date|due|deadline)\b/i.test(line)) {
       const dateMatch = line.match(dateRegex);
-      const dueDate = dateMatch ? (new Date(dateMatch[0]).toISOString().slice(0,10)) : null;
+      const dueDate = dateMatch ? (new Date(dateMatch[0]).toISOString().slice(0, 10)) : null;
       const title = line.replace(/\b(due date|due|deadline)[:\-]?/i, '').replace(dateRegex, '').trim() || null;
       assignments.push({ title, dueDate, course: null });
       continue;
     }
-
-    // Generic important date detection
     if (dateRegex.test(line) && /\b(holiday|exam|exam\s+week|start|end|deadline|due)\b/i.test(line)) {
       const m = line.match(dateRegex);
-      const date = m ? (new Date(m[0]).toISOString().slice(0,10)) : null;
+      const date = m ? (new Date(m[0]).toISOString().slice(0, 10)) : null;
       importantDates.push({ title: line.replace(dateRegex, '').trim() || 'Important date', date });
       continue;
     }
 
-    // If line looks like a course name (Intro/Introduction/Seminar) but not a location, capture it
-    if (/\b(Intro|Introduction|Seminar|Lab|Mobile|Computing|Network|Management|Graphics)\b/i.test(line) && line.length < 80 && !locationOnlyRegex.test(line)) {
-      courses.push({ name: line, code: null, professor: null });
+    // Detect course code (prefer BIT but accept generic code patterns)
+    const codeMatch = line.match(bitCodeRegex) || line.match(courseCodeRegex);
+    if (codeMatch) {
+      let codeRaw = codeMatch[0] || '';
+      let code = codeRaw.replace(/\s+/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      // Extract any inline name text after the code
+      let name = line.replace(codeMatch[0], '').replace(/[-–—:]/g, ' ').trim();
+      // If name is missing, peek at next non-location line
+      if ((!name || name.length < 3) && raw[i + 1] && !locationOnlyRegex.test(raw[i + 1]) && raw[i + 1].length < 80) {
+        name = raw[i + 1];
+      }
+      entries.push({ index: i, code, name: name || null, raw: line });
       continue;
+    }
+
+    // Heuristic: if line looks like a course title (keywords or multiple capitalized words)
+    if (!locationOnlyRegex.test(line) && line.length > 2 && line.length < 100) {
+      // avoid adding trivial single-character tokens
+      const wordCount = line.split(/\s+/).length;
+      // consider as name-candidate when it has at least 2 words or matches known keywords
+      if (wordCount >= 2 || /\b(Intro|Introduction|Seminar|Lab|Mobile|Computing|Network|Management|Graphics|Computer)\b/i.test(line)) {
+        entries.push({ index: i, code: null, name: line, raw: line });
+        continue;
+      }
     }
   }
 
-  // Deduplicate course names
-  const seen = new Set();
+  // Second pass: associate nearby names with codes and consolidate
+  const byCode = new Map(); // code -> { code, name, index }
+  const nameOnly = [];
+  for (const e of entries) {
+    if (e.code) {
+      // prefer the first non-location name we can find for this code
+      const existing = byCode.get(e.code) || { code: e.code, name: null, index: e.index };
+      if (!existing.name && e.name && !locationOnlyRegex.test(e.name)) existing.name = e.name;
+      byCode.set(e.code, existing);
+    } else if (e.name) {
+      nameOnly.push(e);
+    }
+  }
+
+  // Try to pair name-only entries with nearest code within +/-1 lines (or next line)
+  for (const n of nameOnly) {
+    // find any code whose index is close
+    let paired = false;
+    for (const [code, obj] of byCode.entries()) {
+      if (Math.abs(obj.index - n.index) <= 1) {
+        // if code has no name, attach this name; otherwise, prefer existing name but consider combining
+        if (!obj.name) obj.name = n.name;
+        else if (obj.name && obj.name !== n.name) obj.name = `${obj.name} ${n.name}`.trim();
+        paired = true;
+        break;
+      }
+    }
+    if (!paired) {
+      // hold as standalone course candidate
+      courses.push({ name: n.name, code: null, professor: null });
+    }
+  }
+
+  // Move byCode entries into courses
+  for (const obj of byCode.values()) {
+    // Filter out entries that are just locations
+    if (!obj.name || locationOnlyRegex.test(obj.name)) {
+      courses.push({ name: null, code: obj.code, professor: null });
+    } else {
+      // Normalize multiple spaces
+      const normalizedName = obj.name.replace(/\s{2,}/g, ' ').trim();
+      courses.push({ name: normalizedName, code: obj.code, professor: null });
+    }
+  }
+
+  // Deduplicate: prefer entries with a code, then by normalized name
+  const seenCodes = new Set();
+  const seenNames = new Set();
   const uniqCourses = [];
   for (const c of courses) {
-    const key = (c.name || '') + '||' + (c.code || '');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    uniqCourses.push(c);
+    if (c.code) {
+      if (seenCodes.has(c.code)) continue;
+      seenCodes.add(c.code);
+      // also mark the name as seen if present
+      if (c.name) seenNames.add((c.name || '').toLowerCase());
+      uniqCourses.push(c);
+    } else if (c.name) {
+      const nkey = c.name.toLowerCase();
+      if (seenNames.has(nkey)) continue;
+      seenNames.add(nkey);
+      uniqCourses.push(c);
+    }
   }
 
   return { courses: uniqCourses, assignments, importantDates };
