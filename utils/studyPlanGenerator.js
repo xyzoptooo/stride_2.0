@@ -36,14 +36,14 @@ async function analyzeLearningPatterns(activities) {
 }
 
 /**
- * Estimates assignment complexity using GPT
+ * Estimates assignment complexity using Groq AI
  */
 async function estimateAssignmentComplexity(assignment) {
   try {
     const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
+      'https://api.groq.com/openai/v1/chat/completions',
       {
-        model: 'gpt-4',
+        model: 'llama-3.3-70b-versatile',
         messages: [{
           role: 'system',
           content: 'You are an academic difficulty assessment expert. Analyze the assignment details and estimate its complexity.'
@@ -60,7 +60,7 @@ async function estimateAssignmentComplexity(assignment) {
       },
       {
         headers: {
-          'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${env.GROQ_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }
@@ -97,9 +97,9 @@ export async function generateStudyPlan(courses, assignments, activities, userPr
   // Get courses that need attention using AI analysis
   try {
     const coursesAnalysis = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
+      'https://api.groq.com/openai/v1/chat/completions',
       {
-        model: 'gpt-4',
+        model: 'llama-3.3-70b-versatile',
         messages: [{
           role: 'system',
           content: 'You are an academic advisor specializing in study pattern analysis.'
@@ -114,7 +114,7 @@ export async function generateStudyPlan(courses, assignments, activities, userPr
       },
       {
         headers: {
-          'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${env.GROQ_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }
@@ -213,9 +213,9 @@ export async function generateStudyPlan(courses, assignments, activities, userPr
 async function generateStudyStrategies(item, complexity) {
   try {
     const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
+      'https://api.groq.com/openai/v1/chat/completions',
       {
-        model: 'gpt-4',
+        model: 'llama-3.3-70b-versatile',
         messages: [{
           role: 'system',
           content: 'You are an expert in learning strategies and study techniques.'
@@ -230,7 +230,7 @@ async function generateStudyStrategies(item, complexity) {
       },
       {
         headers: {
-          'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+          'Authorization': `Bearer ${env.GROQ_API_KEY}`,
           'Content-Type': 'application/json'
         }
       }

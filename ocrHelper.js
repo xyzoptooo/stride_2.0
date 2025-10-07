@@ -44,7 +44,7 @@ const CONFIG = {
 };
 
 /**
- * Processes an image buffer using GPT-5 Vision API for text extraction
+ * Processes an image buffer using Groq Vision API for text extraction
  * @param {Buffer} buffer - The image buffer to process
  * @param {string} filename - Original filename (for logging)
  * @returns {Promise<string>} Extracted text from the image
@@ -63,14 +63,14 @@ async function ocrImageBuffer(buffer, filename) {
     // Convert image buffer to base64
     const base64Image = buffer.toString('base64');
 
-    // Set up timeout for GPT-5 API call
+    // Set up timeout for Groq API call
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('GPT-5 operation timed out')), CONFIG.OCR_TIMEOUT_MS);
+      setTimeout(() => reject(new Error('Groq AI operation timed out')), CONFIG.OCR_TIMEOUT_MS);
     });
 
-    // Call GPT-5 API for image analysis
-    const apiPromise = axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-4-vision-preview',
+    // Call Groq AI API for image analysis (using llama-3.2-90b-vision-preview for vision tasks)
+    const apiPromise = axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'llama-3.2-90b-vision-preview',
       messages: [
         {
           role: 'user',
@@ -91,18 +91,18 @@ async function ocrImageBuffer(buffer, filename) {
       max_tokens: 4096
     }, {
       headers: {
-        'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${env.GROQ_API_KEY}`,
         'Content-Type': 'application/json'
       }
     }).catch(error => {
-      logger.error('GPT-5 API error:', { error });
+      logger.error('Groq AI API error:', { error });
       throw new Error('Image analysis failed');
     });
 
     const response = await Promise.race([apiPromise, timeoutPromise]);
 
     if (!response.data.choices || !response.data.choices[0]?.message?.content) {
-      throw new Error('Invalid response from GPT-5');
+      throw new Error('Invalid response from Groq AI');
     }
 
     const extractedText = response.data.choices[0].message.content;

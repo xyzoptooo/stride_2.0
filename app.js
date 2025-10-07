@@ -21,6 +21,7 @@ import assignmentRoutes from './routes/assignment.route.js';
 import activityRoutes from './routes/activity.route.js';
 import noteRoutes from './routes/note.route.js';
 import reminderRoutes from './routes/reminder.route.js';
+import aiRoutes from './routes/ai.route.js';
 // Import other routes...
 
 // Create Express app factory for testing
@@ -135,6 +136,7 @@ function createApp() {
   app.use('/api/activities', activityRoutes);
   app.use('/api/notes', noteRoutes);
   app.use('/api/reminders', reminderRoutes);
+  app.use('/api/ai', aiRoutes);
   // Mount other routes...
 
   // Handle 404 errors

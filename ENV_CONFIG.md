@@ -7,7 +7,7 @@ Important variables
 - `PORT` - port the server listens on (default: `3000`)
 - `NODE_ENV` - `development` or `production`
 - `MONGODB_URI` - MongoDB connection string (required)
-- `OPENAI_API_KEY` - OpenAI API key (required for AI features)
+- `GROQ_API_KEY` - Groq API key (required for AI features)
 
 Upload and size limits
 
@@ -18,9 +18,9 @@ Rate limiting
 - `RATE_LIMIT_WINDOW_MS` - rate limit window size in milliseconds. Default: `900000` (15 minutes).
 - `RATE_LIMIT_MAX` - number of requests allowed per IP per window. Default: `100`.
 
-Concurrency (OCR/OpenAI)
+Concurrency (OCR/Groq)
 
-- `OCR_CONCURRENCY` - number of concurrent heavy tasks (OCR/OpenAI) the server will run in-process. Default: `2`.
+- `OCR_CONCURRENCY` - number of concurrent heavy tasks (OCR/Groq) the server will run in-process. Default: `2`.
 
 Notes
 

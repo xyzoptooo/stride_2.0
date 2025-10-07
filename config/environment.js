@@ -30,7 +30,7 @@ export const corsConfig = {
 // Required environment variables
 export const requiredEnvVars = [
   'SUPABASE_SERVICE_KEY',
-  'OPENAI_API_KEY',
+  'GROQ_API_KEY',
   'NODE_ENV',
   'MPESA_CONSUMER_KEY',
   'MPESA_CONSUMER_SECRET',
@@ -80,7 +80,7 @@ validateEnv();
 export const env = {
   port: process.env.PORT || 3000,
   MONGODB_URI: process.env.MONGODB_URI,
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  GROQ_API_KEY: process.env.GROQ_API_KEY,
   HF_API_TOKEN: process.env.HF_API_TOKEN || null,
   SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY,
   SUPABASE_PROJECT_ID: process.env.SUPABASE_PROJECT_ID || process.env.SUPABASE_URL?.match(/https:\/\/([^.]+)\.supabase\.co/)?.[1] || '',
@@ -93,7 +93,7 @@ export const env = {
   rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW_MS || (15 * 60 * 1000).toString(), 10),
   // Max requests per window per IP (default: 100)
   rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
-  // Concurrency for heavy CPU/IO bound tasks like OCR/OpenAI requests (default: 2)
+  // Concurrency for heavy CPU/IO bound tasks like OCR/Groq AI requests (default: 2)
   ocrConcurrency: parseInt(process.env.OCR_CONCURRENCY || '2', 10),
   // Allow anonymous onboarding (run OCR/extraction without requiring auth).
   // If true, /api/onboarding/import will process files but will not persist them to user DB unless authenticated.
@@ -116,5 +116,7 @@ export const env = {
   WEB_PUSH_VAPID_PUBLIC_KEY: process.env.WEB_PUSH_VAPID_PUBLIC_KEY || null,
   WEB_PUSH_VAPID_PRIVATE_KEY: process.env.WEB_PUSH_VAPID_PRIVATE_KEY || null,
   REMINDER_MAX_BATCH_SIZE: parseInt(process.env.REMINDER_MAX_BATCH_SIZE || '100', 10),
-  SMART_REMINDERS_DISABLED: process.env.SMART_REMINDERS_DISABLED === 'true'
+  SMART_REMINDERS_DISABLED: process.env.SMART_REMINDERS_DISABLED === 'true',
+  // Groq AI API key for intelligent features (required for AI features)
+  AI_FEATURES_ENABLED: process.env.AI_FEATURES_ENABLED === 'true' || false
 };

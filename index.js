@@ -347,7 +347,7 @@ app.use(helmet({
       scriptSrc: ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:', 'https:'],
-      connectSrc: ["'self'", 'https://api.openai.com', `https://${process.env.SUPABASE_PROJECT_ID}.supabase.co`]
+      connectSrc: ["'self'", 'https://api.groq.com', `https://${process.env.SUPABASE_PROJECT_ID}.supabase.co`]
     }
   },
   crossOriginEmbedderPolicy: false,
@@ -521,7 +521,7 @@ const connectWithRetry = async (retries = 5, delay = 5000) => {
 connectWithRetry();
 
 // --- Syllabus import endpoint (file upload) ---
-// Syllabus import endpoint now uses GPT-5 Vision for analyzing documents
+// Syllabus import endpoint now uses Groq Vision for analyzing documents
 app.post('/api/syllabus/import', authenticate, uploadLimiter, upload.single('file'), catchAsync(async (req, res) => {
   console.log('--- /api/syllabus/import called ---');
   
@@ -546,9 +546,9 @@ app.post('/api/syllabus/import', authenticate, uploadLimiter, upload.single('fil
   // Encode file as base64
   const fileBase64 = Buffer.from(req.file.buffer).toString('base64');
 
-  // Call GPT-5 API for syllabus analysis
-  const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-    model: 'gpt-4-vision-preview',
+  // Call Groq API for syllabus analysis
+  const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+    model: 'llama-3.2-90b-vision-preview',
     max_tokens: 4096,
     messages: [
       {
@@ -569,13 +569,13 @@ app.post('/api/syllabus/import', authenticate, uploadLimiter, upload.single('fil
     ]
   }, {
     headers: {
-      'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+      'Authorization': `Bearer ${env.GROQ_API_KEY}`,
       'Content-Type': 'application/json'
     }
   });
 
   if (!response.data.choices || !response.data.choices[0]?.message?.content) {
-    throw new AppError('Invalid response from GPT-5', 500);
+    throw new AppError('Invalid response from Groq API', 500);
   }
 
   try {
@@ -584,7 +584,7 @@ app.post('/api/syllabus/import', authenticate, uploadLimiter, upload.single('fil
     res.status(200).json({
       status: 'success',
       data: {
-        source: 'gpt-5-vision',
+        source: 'groq-vision',
         extracted: extractedData
       }
     });

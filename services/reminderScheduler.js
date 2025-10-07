@@ -6,10 +6,12 @@ import ReminderAnalytics from '../models/reminderAnalytics.js';
 import Assignment from '../models/assignment.js';
 import User from '../models/user.js';
 import PushSubscription from '../models/pushSubscription.js';
+import Activity from '../models/activity.js';
 import { encrypt } from '../utils/encryption.js';
 import { env } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
 import { dedupeExistingReminder, suggestSchedule, computeInactivitySchedule, updateAnalyticsWithInteraction } from './predictionEngine.js';
+import { generateAdaptiveReminderInsights } from './groqAI.js';
 
 const DEADLINE_LOOKAHEAD_HOURS = 48;
 const DISPATCH_BATCH_SIZE = parseInt(env.REMINDER_MAX_BATCH_SIZE ?? '100', 10);
@@ -134,11 +136,50 @@ const scheduleBehaviouralReminders = async ({ preferences }) => {
     const preference = preferences[row.supabaseId];
     if (!preference?.smartRemindersEnabled) continue;
 
+    // AI Enhancement: Get adaptive reminder insights if AI is enabled
+    let aiInsights = null;
+    const user = await User.findOne({ supabaseId: row.supabaseId });
+    if (user?.aiPreferences?.enabled && env.GROQ_API_KEY) {
+      try {
+        // Get recent activities for behavior analysis
+        const recentActivities = await Activity.find({ 
+          supabaseId: row.supabaseId 
+        }).sort({ timestamp: -1 }).limit(100);
+        
+        // Get upcoming deadlines
+        const upcomingDeadlines = await Assignment.find({
+          supabaseId: row.supabaseId,
+          dueDate: { $gte: new Date() },
+          progress: { $lt: 100 }
+        }).limit(20);
+
+        const userBehavior = {
+          avgCompletionLeadHours: row.averageCompletionLeadHours,
+          completionRate: calculateUserCompletionRate(recentActivities),
+          preferredHour: row.preferredHourOfDay,
+          reminderResponseRate: calculateReminderResponseRate(row.supabaseId)
+        };
+
+        aiInsights = await generateAdaptiveReminderInsights({
+          userBehavior,
+          upcomingDeadlines
+        });
+      } catch (error) {
+        logger.warn('AI reminder insights failed, using default behavior', { error: error.message });
+      }
+    }
+
+    // Adjust lead time based on AI insights if available
+    let fallbackMinutes = row.averageCompletionLeadHours * 60;
+    if (aiInsights?.suggestedLeadTime) {
+      fallbackMinutes = aiInsights.suggestedLeadTime * 60;
+    }
+
     const candidate = await suggestSchedule({
       supabaseId: row.supabaseId,
       dueDate: null,
       preference,
-      fallbackMinutes: row.averageCompletionLeadHours * 60
+      fallbackMinutes
     });
 
     const existing = await dedupeExistingReminder({
@@ -150,14 +191,27 @@ const scheduleBehaviouralReminders = async ({ preferences }) => {
 
     if (existing) continue;
 
+    // Customize message tone based on AI insights
+    let message = 'Based on your recent activity, now is a great time for a focused session.';
+    if (aiInsights?.tone === 'urgent') {
+      message = 'You have upcoming deadlines! Time to focus on your assignments.';
+    } else if (aiInsights?.tone === 'encouraging') {
+      message = 'You\'re doing great! Keep the momentum going with a study session.';
+    }
+
     const reminder = new Reminder({
       supabaseId: row.supabaseId,
       type: 'BEHAVIORAL',
       title: 'Quick study suggestion',
-      message: 'Based on your recent activity, now is a great time for a focused session.',
+      message,
       foreignId: `behaviour_${candidate.toISOString().slice(0, 10)}`,
       scheduledFor: candidate,
-      metadata: encrypt({ reason: 'behavioural', hint: 'study-session' })
+      metadata: encrypt({ 
+        reason: 'behavioural', 
+        hint: 'study-session',
+        aiEnhanced: !!aiInsights,
+        aiReasoning: aiInsights?.reasoning
+      })
     });
 
     await reminder.save();
@@ -259,3 +313,31 @@ export const logReminderInteraction = async ({ reminderId, action, metadata }) =
     interactionDate: actedAt
   });
 };
+
+// Helper functions for AI-enhanced reminders
+function calculateUserCompletionRate(activities) {
+  const completionActivities = activities.filter(a => 
+    a.type === 'ASSIGNMENT_UPDATE' && a.details?.progress === 100
+  );
+  const totalAssignmentActivities = activities.filter(a => 
+    a.type.startsWith('ASSIGNMENT_')
+  );
+  
+  if (totalAssignmentActivities.length === 0) return 70; // default
+  return Math.round((completionActivities.length / totalAssignmentActivities.length) * 100);
+}
+
+async function calculateReminderResponseRate(supabaseId) {
+  const reminders = await Reminder.find({ 
+    supabaseId,
+    status: { $in: ['completed', 'dismissed', 'sent'] }
+  }).limit(50);
+  
+  if (reminders.length === 0) return 60; // default
+  
+  const responded = reminders.filter(r => 
+    r.interactions.some(i => ['completed', 'snoozed'].includes(i.action))
+  );
+  
+  return Math.round((responded.length / reminders.length) * 100);
+}

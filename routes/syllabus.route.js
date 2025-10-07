@@ -57,8 +57,8 @@ router.post('/import', authenticate, syllabusLimiter, upload.single('file'), asy
       }
     }
 
-    // If OpenAI key is not configured, fall back to pdf-parse or OCR-only
-  if (!env.OPENAI_API_KEY) {
+    // If Groq key is not configured, fall back to pdf-parse or OCR-only
+  if (!env.GROQ_API_KEY) {
       try {
         if (req.file.mimetype === 'application/pdf') {
           const pdfParse = await import('pdf-parse');
@@ -86,8 +86,8 @@ router.post('/import', authenticate, syllabusLimiter, upload.single('file'), asy
     // Add a short instruction that the image (if present) is attached as a data URI
     prompt += `Image (if present) is included as a data URI with mimetype ${req.file.mimetype} and will be available to you for visual analysis.`;
 
-  const response = await axios.post('https://api.openai.com/v1/chat/completions', {
-      model: 'gpt-4-vision-preview',
+  const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'llama-3.2-90b-vision-preview',
       max_tokens: 4096,
       messages: [
         { role: 'system', content: 'You are an expert academic data extraction assistant. Extract information in a precise, structured format.' },
@@ -95,7 +95,7 @@ router.post('/import', authenticate, syllabusLimiter, upload.single('file'), asy
       ]
     }, {
       headers: {
-        'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${env.GROQ_API_KEY}`,
         'Content-Type': 'application/json'
       },
       timeout: 120000
@@ -169,13 +169,13 @@ router.post('/import', authenticate, syllabusLimiter, upload.single('file'), asy
         savedAssignments.push(savedA);
       }
 
-      return res.json({ status: 'success', source: 'gpt-4-vision', data: extractedData, saved: { courses: savedCourses, assignments: savedAssignments } });
+      return res.json({ status: 'success', source: 'groq-vision', data: extractedData, saved: { courses: savedCourses, assignments: savedAssignments } });
     } catch (saveErr) {
       logger?.warn('Failed to persist extracted syllabus data', { err: saveErr?.message || saveErr });
-      return res.json({ status: 'success', source: 'gpt-4-vision', data: extractedData, saved: { courses: [], assignments: [] }, warning: 'Failed to persist data' });
+      return res.json({ status: 'success', source: 'groq-vision', data: extractedData, saved: { courses: [], assignments: [] }, warning: 'Failed to persist data' });
     }
   } catch (error) {
-    logger?.warn('OpenAI extraction failed or not configured', { err: error?.message || error });
+    logger?.warn('Groq extraction failed or not configured', { err: error?.message || error });
 
     // Try PDF fallback
     try {
