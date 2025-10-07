@@ -27,12 +27,14 @@ import Activity from './models/activity.js';
 import Note from './models/note.js';
 import User from './models/user.js';
 import MPesaTransaction from './models/mpesaTransaction.js';
+import StudyPlan from './models/studyPlan.js';
 
 // Import middleware
 import { catchAsync } from './middleware/errorHandler.js';
 
 // Import utilities
-import { generateStudyPlan } from './utils/studyPlanGenerator.js';
+import { generateStudyPlan as generateBasicStudyPlan } from './utils/studyPlanGenerator.js';
+import { generateStudyPlan as generateAIStudyPlan } from './services/groqAI.js';
 
 // Load environment variables first
 dotenv.config();
@@ -1290,6 +1292,179 @@ app.get('/api/analytics/progress/:supabaseId', authenticate, catchAsync(async (r
     data: analytics
   });
 }));
+
+// ==================== AI STUDY PLAN ROUTES ====================
+
+/**
+ * POST /api/ai/study-plan/:supabaseId
+ * Generate a new AI-powered study plan
+ */
+app.post('/api/ai/study-plan/:supabaseId', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  
+  // Check if user has AI features enabled
+  const user = await User.findOne({ supabaseId });
+  if (!user) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'User not found'
+    });
+  }
+
+  if (!user.aiPreferences?.enabled) {
+    return res.status(403).json({
+      status: 'error',
+      message: 'AI features are disabled. Enable them in settings.'
+    });
+  }
+
+  // Fetch user's data
+  const [courses, assignments, activities] = await Promise.all([
+    Course.find({ supabaseId }),
+    Assignment.find({ supabaseId }),
+    Activity.find({ supabaseId }).sort({ timestamp: -1 }).limit(500)
+  ]);
+
+  // Generate AI study plan
+  const planData = await generateAIStudyPlan({
+    courses,
+    assignments,
+    activities,
+    preferences: user.aiPreferences || {}
+  });
+
+  // Save the plan to database
+  const studyPlan = new StudyPlan({
+    supabaseId,
+    planData,
+    status: 'draft',
+    generatedAt: new Date()
+  });
+  await studyPlan.save();
+
+  res.status(201).json({
+    status: 'success',
+    data: {
+      planId: studyPlan._id,
+      ...planData,
+      status: studyPlan.status,
+      generatedAt: studyPlan.generatedAt
+    }
+  });
+}));
+
+/**
+ * GET /api/ai/study-plan/:supabaseId/latest
+ * Get the latest study plan for a user
+ */
+app.get('/api/ai/study-plan/:supabaseId/latest', authenticate, catchAsync(async (req, res) => {
+  const { supabaseId } = req.params;
+  
+  const latestPlan = await StudyPlan.findLatestForUser(supabaseId);
+  
+  if (!latestPlan) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'No study plan found'
+    });
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      planId: latestPlan._id,
+      ...latestPlan.planData,
+      status: latestPlan.status,
+      generatedAt: latestPlan.generatedAt,
+      userModified: latestPlan.editHistory && latestPlan.editHistory.length > 0
+    }
+  });
+}));
+
+/**
+ * PATCH /api/ai/study-plan/:planId/accept
+ * Mark a study plan as accepted/active
+ */
+app.patch('/api/ai/study-plan/:planId/accept', authenticate, catchAsync(async (req, res) => {
+  const { planId } = req.params;
+  
+  const studyPlan = await StudyPlan.findById(planId);
+  if (!studyPlan) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Study plan not found'
+    });
+  }
+
+  studyPlan.markAsAccepted();
+  await studyPlan.save();
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      planId: studyPlan._id,
+      status: studyPlan.status,
+      acceptedAt: studyPlan.acceptedAt
+    }
+  });
+}));
+
+/**
+ * PATCH /api/ai/study-plan/:planId/edit
+ * Edit a study plan and track changes
+ */
+app.patch('/api/ai/study-plan/:planId/edit', authenticate, catchAsync(async (req, res) => {
+  const { planId } = req.params;
+  const { planData, changes } = req.body;
+  
+  const studyPlan = await StudyPlan.findById(planId);
+  if (!studyPlan) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Study plan not found'
+    });
+  }
+
+  studyPlan.addEdit(changes, planData);
+  await studyPlan.save();
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      planId: studyPlan._id,
+      ...studyPlan.planData,
+      status: studyPlan.status,
+      userModified: true
+    }
+  });
+}));
+
+/**
+ * DELETE /api/ai/study-plan/:planId
+ * Archive a study plan
+ */
+app.delete('/api/ai/study-plan/:planId', authenticate, catchAsync(async (req, res) => {
+  const { planId } = req.params;
+  
+  const studyPlan = await StudyPlan.findById(planId);
+  if (!studyPlan) {
+    return res.status(404).json({
+      status: 'error',
+      message: 'Study plan not found'
+    });
+  }
+
+  studyPlan.status = 'archived';
+  studyPlan.archivedAt = new Date();
+  await studyPlan.save();
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Study plan archived successfully'
+  });
+}));
+
+// ==================== END AI STUDY PLAN ROUTES ====================
 
 // 404 handler for undefined routes
 app.all('*', (req, res, next) => {
