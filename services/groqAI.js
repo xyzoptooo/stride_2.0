@@ -470,11 +470,215 @@ export async function healthCheck() {
   }
 }
 
+/**
+ * Generate a comprehensive personalized study plan
+ * 
+ * @param {Object} params
+ * @param {Array} params.courses - User's courses
+ * @param {Array} params.assignments - User's assignments
+ * @param {Array} params.activities - User's recent activities
+ * @param {Object} params.preferences - User preferences
+ * @returns {Promise<Object>} - Comprehensive study plan
+ */
+export async function generateStudyPlan({ courses, assignments, activities, preferences }) {
+  try {
+    // Anonymize data
+    const anonymizedActivities = anonymizeActivityData(activities);
+    
+    // Prepare courses summary
+    const coursesSummary = courses.map((c, i) => ({
+      id: `course_${i}`,
+      name: c.name?.substring(0, 30) || 'Course',
+      credits: c.credits || 3,
+      hasUpcomingAssignments: assignments.some(a => 
+        a.course?.toString() === c._id?.toString() && 
+        new Date(a.dueDate) > new Date()
+      )
+    }));
+    
+    // Prepare assignments summary (anonymized)
+    const assignmentsSummary = assignments.map((a, i) => {
+      const dueDate = new Date(a.dueDate);
+      const now = new Date();
+      const dueInDays = Math.ceil((dueDate - now) / (1000 * 60 * 60 * 24));
+      
+      return {
+        id: `assignment_${i}`,
+        title: a.title?.substring(0, 40) || 'Assignment',
+        dueInDays: dueInDays,
+        priority: a.priority || 'medium',
+        progress: a.progress || 0,
+        estimatedHours: a.estimatedHours || 2,
+        courseIndex: coursesSummary.findIndex(c => c.name === courses.find(course => 
+          course._id?.toString() === a.course?.toString()
+        )?.name)
+      };
+    }).filter(a => a.dueInDays >= 0 && a.progress < 100); // Only include pending future assignments
+    
+    // Calculate activity patterns
+    const studySessionCount = anonymizedActivities.filter(a => a.type === 'STUDY_SESSION_START').length;
+    const avgStudyHour = anonymizedActivities.length > 0
+      ? Math.round(anonymizedActivities.reduce((sum, a) => sum + (a.hourOfDay || 14), 0) / anonymizedActivities.length)
+      : 14;
+    
+    // Build comprehensive prompt
+    const messages = [
+      {
+        role: 'system',
+        content: `You are an expert academic study planner. Create personalized, actionable study plans based on student data. Focus on:
+- Realistic time management
+- Priority-based task scheduling
+- Work-life balance
+- Progressive learning strategies
+- Deadline management
+- Avoiding burnout
+
+Provide specific, actionable recommendations with time allocations.`
+      },
+      {
+        role: 'user',
+        content: `Create a comprehensive weekly study plan for a student with:
+
+**Courses (${coursesSummary.length} total):**
+${coursesSummary.map((c, i) => `${i + 1}. ${c.name} (${c.credits} credits)${c.hasUpcomingAssignments ? ' - Has upcoming assignments' : ''}`).join('\n')}
+
+**Pending Assignments (${assignmentsSummary.length} total):**
+${assignmentsSummary.slice(0, 10).map((a, i) => 
+  `${i + 1}. ${a.title} - Due in ${a.dueInDays} days (${a.priority} priority, ${a.progress}% complete, ~${a.estimatedHours}h)`
+).join('\n')}
+${assignmentsSummary.length > 10 ? `... and ${assignmentsSummary.length - 10} more assignments` : ''}
+
+**Activity Patterns:**
+- Recent study sessions: ${studySessionCount}
+- Most productive hour: ${avgStudyHour}:00
+- Total activities logged: ${anonymizedActivities.length}
+
+Generate a JSON response with this structure:
+{
+  "overview": "Brief 2-3 sentence summary of the plan",
+  "recommendations": [
+    {
+      "title": "Task title",
+      "description": "Detailed description and approach",
+      "priority": "high|medium|low",
+      "estimatedDuration": minutes_as_number,
+      "dueDate": "YYYY-MM-DD" (if applicable),
+      "courseIndex": index_in_courses_array (or -1 if general)
+    }
+  ],
+  "studySchedule": [
+    {
+      "day": "Monday|Tuesday|etc",
+      "timeSlot": "HH:00-HH:00",
+      "activity": "What to work on",
+      "subject": "Course or topic"
+    }
+  ],
+  "weeklyGoals": ["Goal 1", "Goal 2", "Goal 3"],
+  "motivationalMessage": "Encouraging message for the student"
+}
+
+Provide at least 5-8 specific recommendations, covering:
+1. Urgent assignments (due within 3 days)
+2. Medium-term assignments (due within 1 week)
+3. Course review/catch-up suggestions
+4. Study habit improvements
+5. Time management tips
+
+Create a balanced schedule across the week. Be specific and actionable.`
+      }
+    ];
+
+    const response = await callGroqAPI({ 
+      messages, 
+      maxTokens: 3000, 
+      temperature: 0.8 
+    });
+    
+    // Parse JSON response
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('Invalid AI response format');
+    }
+    
+    const planData = JSON.parse(jsonMatch[0]);
+    
+    // Map course indices back to actual course IDs
+    if (planData.recommendations) {
+      planData.recommendations = planData.recommendations.map(rec => {
+        if (rec.courseIndex >= 0 && rec.courseIndex < courses.length) {
+          rec.courseId = courses[rec.courseIndex]._id;
+        }
+        delete rec.courseIndex; // Remove the temporary index
+        return rec;
+      });
+    }
+    
+    // Add assignment IDs where applicable
+    if (planData.recommendations && assignments.length > 0) {
+      planData.recommendations = planData.recommendations.map(rec => {
+        // Try to match recommendation with assignment by title similarity
+        const matchedAssignment = assignments.find(a => 
+          rec.title && a.title && 
+          rec.title.toLowerCase().includes(a.title.substring(0, 20).toLowerCase())
+        );
+        if (matchedAssignment) {
+          rec.assignmentId = matchedAssignment._id;
+        }
+        return rec;
+      });
+    }
+    
+    logger.info('AI study plan generated', {
+      coursesCount: courses.length,
+      assignmentsCount: assignments.length,
+      recommendationsCount: planData.recommendations?.length,
+      scheduleItemsCount: planData.studySchedule?.length
+    });
+    
+    return {
+      ...planData,
+      generationContext: {
+        coursesCount: courses.length,
+        assignmentsCount: assignments.length,
+        upcomingDeadlinesCount: assignmentsSummary.filter(a => a.dueInDays <= 7).length,
+        activityPatternSummary: `${studySessionCount} study sessions, most active at ${avgStudyHour}:00`
+      }
+    };
+    
+  } catch (error) {
+    logger.error('Failed to generate study plan', { error: error.message });
+    
+    // Fallback basic plan
+    return {
+      overview: 'Basic study plan created. Add more data for better recommendations.',
+      recommendations: [
+        {
+          title: 'Review upcoming assignments',
+          description: 'Check all assignment due dates and prioritize based on urgency.',
+          priority: 'high',
+          estimatedDuration: 30
+        },
+        {
+          title: 'Create a weekly schedule',
+          description: 'Block out time for each course and assignment.',
+          priority: 'medium',
+          estimatedDuration: 45
+        }
+      ],
+      studySchedule: [],
+      weeklyGoals: ['Stay organized', 'Meet all deadlines', 'Maintain work-life balance'],
+      motivationalMessage: 'You\'ve got this! Start small and stay consistent.'
+    };
+  }
+}
+
 export default {
   generateTaskRecommendations,
   generateAdaptiveReminderInsights,
   generateWeeklyAnalytics,
   generateStudyTimeSuggestion,
   generateCourseProgressInsight,
+  generateStudyPlan,
   healthCheck,
 };

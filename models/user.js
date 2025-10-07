@@ -5,7 +5,7 @@ const UserSchema = new mongoose.Schema({
   name: String,
   email: String,
   aiPreferences: {
-    enabled: { type: Boolean, default: false },
+    enabled: { type: Boolean, default: true }, // AI recommendations enabled by default
     updatedAt: { type: Date, default: Date.now }
   },
   // Add more fields as needed

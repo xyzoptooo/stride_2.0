@@ -3,11 +3,13 @@ import Activity from '../models/activity.js';
 import Assignment from '../models/assignment.js';
 import User from '../models/user.js';
 import Course from '../models/course.js';
+import StudyPlan from '../models/studyPlan.js';
 import { 
   generateTaskRecommendations, 
   generateWeeklyAnalytics,
   generateStudyTimeSuggestion,
   generateCourseProgressInsight,
+  generateStudyPlan,
   healthCheck 
 } from '../services/groqAI.js';
 import { logger } from '../utils/logger.js';
@@ -364,5 +366,258 @@ async function calculateLoginStreak(supabaseId) {
 
   return streak;
 }
+
+/**
+ * POST /api/ai/study-plan/:supabaseId
+ * Generate a comprehensive AI study plan
+ */
+router.post('/study-plan/:supabaseId', async (req, res) => {
+  try {
+    const { supabaseId } = req.params;
+    
+    // Check if user has AI features enabled
+    const user = await User.findOne({ supabaseId });
+    if (!user || !user.aiPreferences?.enabled) {
+      return res.status(200).json({
+        status: 'success',
+        data: {
+          enabled: false,
+          message: 'AI study planning is disabled. Enable AI features in settings.'
+        }
+      });
+    }
+
+    // Fetch user's courses
+    const courses = await Course.find({ supabaseId });
+    if (courses.length === 0) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'No courses found. Please add courses before generating a study plan.'
+      });
+    }
+
+    // Fetch assignments
+    const assignments = await Assignment.find({ 
+      supabaseId,
+      dueDate: { $exists: true }
+    });
+
+    // Fetch recent activities (last 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const activities = await Activity.find({
+      supabaseId,
+      timestamp: { $gte: thirtyDaysAgo }
+    }).sort({ timestamp: -1 }).limit(500);
+
+    // Get user preferences
+    const preferences = user.aiPreferences || {};
+
+    // Generate study plan via Groq AI
+    const planData = await generateStudyPlan({
+      courses,
+      assignments,
+      activities,
+      preferences
+    });
+
+    // Save to database
+    const studyPlan = new StudyPlan({
+      supabaseId,
+      title: `Study Plan - ${new Date().toLocaleDateString()}`,
+      planData,
+      generationContext: planData.generationContext,
+      aiModel: 'llama-3.3-70b-versatile',
+      status: 'draft'
+    });
+
+    await studyPlan.save();
+
+    res.json({
+      status: 'success',
+      data: {
+        planId: studyPlan._id,
+        ...planData,
+        generatedAt: studyPlan.generatedAt,
+        status: studyPlan.status
+      }
+    });
+
+  } catch (error) {
+    logger.error('Failed to generate study plan', { 
+      error: error.message,
+      supabaseId: req.params.supabaseId
+    });
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to generate study plan. Please try again.'
+    });
+  }
+});
+
+/**
+ * GET /api/ai/study-plan/:supabaseId/latest
+ * Get the latest study plan for a user
+ */
+router.get('/study-plan/:supabaseId/latest', async (req, res) => {
+  try {
+    const { supabaseId } = req.params;
+    
+    const latestPlan = await StudyPlan.findLatestForUser(supabaseId);
+    
+    if (!latestPlan) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'No study plans found. Generate your first plan!'
+      });
+    }
+
+    res.json({
+      status: 'success',
+      data: {
+        planId: latestPlan._id,
+        title: latestPlan.title,
+        ...latestPlan.planData,
+        status: latestPlan.status,
+        generatedAt: latestPlan.generatedAt,
+        acceptedAt: latestPlan.acceptedAt,
+        userModified: latestPlan.userModified
+      }
+    });
+
+  } catch (error) {
+    logger.error('Failed to fetch latest study plan', { 
+      error: error.message,
+      supabaseId: req.params.supabaseId
+    });
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch study plan'
+    });
+  }
+});
+
+/**
+ * PATCH /api/ai/study-plan/:planId/accept
+ * Mark a study plan as accepted (active)
+ */
+router.patch('/study-plan/:planId/accept', async (req, res) => {
+  try {
+    const { planId } = req.params;
+    
+    const studyPlan = await StudyPlan.findById(planId);
+    if (!studyPlan) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Study plan not found'
+      });
+    }
+
+    await studyPlan.markAsAccepted();
+
+    res.json({
+      status: 'success',
+      data: {
+        planId: studyPlan._id,
+        status: studyPlan.status,
+        acceptedAt: studyPlan.acceptedAt
+      }
+    });
+
+  } catch (error) {
+    logger.error('Failed to accept study plan', { 
+      error: error.message,
+      planId: req.params.planId
+    });
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to accept study plan'
+    });
+  }
+});
+
+/**
+ * PATCH /api/ai/study-plan/:planId/edit
+ * Edit a study plan and track changes
+ */
+router.patch('/study-plan/:planId/edit', async (req, res) => {
+  try {
+    const { planId } = req.params;
+    const { planData, changes } = req.body;
+    
+    const studyPlan = await StudyPlan.findById(planId);
+    if (!studyPlan) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Study plan not found'
+      });
+    }
+
+    const previousData = { ...studyPlan.planData };
+    
+    // Update plan data
+    studyPlan.planData = { ...studyPlan.planData, ...planData };
+    
+    // Track edit
+    await studyPlan.addEdit(changes || 'User edited plan', previousData);
+
+    res.json({
+      status: 'success',
+      data: {
+        planId: studyPlan._id,
+        ...studyPlan.planData,
+        userModified: studyPlan.userModified,
+        editHistory: studyPlan.editHistory
+      }
+    });
+
+  } catch (error) {
+    logger.error('Failed to edit study plan', { 
+      error: error.message,
+      planId: req.params.planId
+    });
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to edit study plan'
+    });
+  }
+});
+
+/**
+ * DELETE /api/ai/study-plan/:planId
+ * Archive (soft delete) a study plan
+ */
+router.delete('/study-plan/:planId', async (req, res) => {
+  try {
+    const { planId } = req.params;
+    
+    const studyPlan = await StudyPlan.findById(planId);
+    if (!studyPlan) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Study plan not found'
+      });
+    }
+
+    studyPlan.status = 'archived';
+    await studyPlan.save();
+
+    res.json({
+      status: 'success',
+      message: 'Study plan archived successfully'
+    });
+
+  } catch (error) {
+    logger.error('Failed to archive study plan', { 
+      error: error.message,
+      planId: req.params.planId
+    });
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to archive study plan'
+    });
+  }
+});
 
 export default router;
