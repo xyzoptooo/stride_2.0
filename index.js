@@ -663,6 +663,14 @@ app.post('/api/courses', authenticate, validateCourse, catchAsync(async (req, re
     createdAt: new Date(),
     updatedAt: new Date()
   });
+
+  // Log activity
+  await Activity.create({
+    supabaseId,
+    type: 'COURSE_CREATE',
+    entityId: course._id,
+    details: { name: course.name, code: course.code }
+  });
   
   res.status(201).json({
     status: 'success',
@@ -710,6 +718,14 @@ app.put('/api/courses/:id', authenticate, catchAsync(async (req, res) => {
     { ...updates, updatedAt: new Date() },
     { new: true, runValidators: true }
   );
+
+  // Log activity
+  await Activity.create({
+    supabaseId: course.supabaseId,
+    type: 'COURSE_UPDATE',
+    entityId: course._id,
+    details: { updates }
+  });
   
   res.status(200).json({
     status: 'success',
@@ -733,6 +749,14 @@ app.delete('/api/courses/:id', authenticate, catchAsync(async (req, res) => {
   }
   
   await Course.findByIdAndDelete(id);
+
+  // Log activity
+  await Activity.create({
+    supabaseId,
+    type: 'COURSE_DELETE',
+    entityId: id,
+    details: { name: course.name }
+  });
   
   res.status(200).json({
     status: 'success',
@@ -777,6 +801,14 @@ app.post('/api/assignments', authenticate, validateAssignment, catchAsync(async 
     progress: 0,
     createdAt: new Date(),
     updatedAt: new Date()
+  });
+
+  // Log activity
+  await Activity.create({
+    supabaseId,
+    type: 'ASSIGNMENT_CREATE',
+    entityId: assignment._id,
+    details: { title: assignment.title, courseId: course }
   });
   
   res.status(201).json({
@@ -844,6 +876,14 @@ app.put('/api/assignments/:id', authenticate, catchAsync(async (req, res) => {
     { ...updates, updatedAt: new Date() },
     { new: true, runValidators: true }
   );
+
+  // Log activity
+  await Activity.create({
+    supabaseId: assignment.supabaseId,
+    type: 'ASSIGNMENT_UPDATE',
+    entityId: assignment._id,
+    details: { updates }
+  });
   
   res.status(200).json({
     status: 'success',
@@ -866,6 +906,14 @@ app.delete('/api/assignments/:id', authenticate, catchAsync(async (req, res) => 
   }
   
   await Assignment.findByIdAndDelete(id);
+
+  // Log activity
+  await Activity.create({
+    supabaseId,
+    type: 'ASSIGNMENT_DELETE',
+    entityId: id,
+    details: { title: assignment.title }
+  });
   
   res.status(200).json({
     status: 'success',
@@ -908,6 +956,14 @@ app.post('/api/notes', authenticate, validateNote, catchAsync(async (req, res) =
     course,
     createdAt: new Date(),
     updatedAt: new Date()
+  });
+
+  // Log activity
+  await Activity.create({
+    supabaseId,
+    type: 'NOTE_CREATE',
+    entityId: note._id,
+    details: { title: note.title, courseId: course }
   });
   
   res.status(201).json({
