@@ -22,36 +22,42 @@ async function sendReminders() {
   const now = new Date();
   const soon = new Date(now.getTime() + 60 * 60 * 1000); // next 1 hour
 
-  // Event reminders
-  const events = await Activity.find({ reminder: { $gte: now, $lte: soon } });
+  // Calendar Event reminders
+  const events = await Activity.find({
+    type: 'USER_EVENT',
+    startTime: { $gte: now, $lte: soon } 
+  });
   for (const event of events) {
     const user = await User.findOne({ supabaseId: event.supabaseId });
     if (user && user.email) {
       await transporter.sendMail({
         from: process.env.EMAIL_USER,
         to: user.email,
-        subject: `Reminder: Upcoming Event - ${event.details || event.type}`,
-        text: `You have an upcoming event: ${event.details || event.type} at ${event.date}.`,
+        subject: `Reminder: ${event.title}`,
+        text: `This is a reminder for your event: "${event.title}", starting at ${new Date(event.startTime).toLocaleString()}.`,
       });
       console.log(`Sent event reminder to ${user.email} for event ${event._id}`);
     }
   }
 
   // Assignment deadline reminders & overdue
-  const assignments = await Assignment.find({ $or: [
-    { reminder: { $gte: now, $lte: soon } },
-    { dueDate: { $lt: now }, progress: { $lt: 100 } }
-  ] });
+  const assignments = await Assignment.find({
+    $or: [
+      { reminder: { $gte: now, $lte: soon } },
+      { dueDate: { $lt: now }, progress: { $lt: 100 }, isCompleted: false }
+    ]
+  }).populate('course', 'name');
   for (const assignment of assignments) {
     const user = await User.findOne({ supabaseId: assignment.supabaseId });
     if (user && user.email) {
       let subject, text;
-      if (assignment.dueDate < now && assignment.progress < 100) {
+      const courseName = assignment.course ? ` for course "${assignment.course.name}"` : '';
+      if (assignment.dueDate < now) {
         subject = `Overdue Assignment: ${assignment.title}`;
-        text = `Your assignment "${assignment.title}" for course "${assignment.course}" is overdue! Due date was ${assignment.dueDate}.`;
+        text = `Your assignment "${assignment.title}"${courseName} is overdue! The due date was ${new Date(assignment.dueDate).toLocaleString()}.`;
       } else {
         subject = `Assignment Reminder: ${assignment.title}`;
-        text = `You have an upcoming assignment "${assignment.title}" for course "${assignment.course}" due on ${assignment.dueDate}.`;
+        text = `You have an upcoming assignment "${assignment.title}"${courseName} due on ${new Date(assignment.dueDate).toLocaleString()}.`;
       }
       await transporter.sendMail({
         from: process.env.EMAIL_USER,
@@ -72,7 +78,7 @@ async function sendReminders() {
         from: process.env.EMAIL_USER,
         to: user.email,
         subject: `Note Reminder: ${note.title}`,
-        text: `Reminder for your note: "${note.title}". ${note.content ? note.content.substring(0, 100) : ''}`,
+        text: `Reminder for your note: "${note.title}".\n\n${note.content ? note.content.substring(0, 200) : ''}...`,
       });
       console.log(`Sent note reminder to ${user.email} for note ${note._id}`);
     }

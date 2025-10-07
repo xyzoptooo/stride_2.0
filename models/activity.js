@@ -16,10 +16,17 @@ const ActivitySchema = new mongoose.Schema({
       'ASSIGNMENT_DELETE',
       'NOTE_CREATE',
       'STUDY_SESSION_START',
-      'STUDY_SESSION_END'
+      'STUDY_SESSION_END',
+      'CALENDAR_EVENT_CREATE',
+      'CALENDAR_EVENT_UPDATE',
+      'CALENDAR_EVENT_DELETE',
+      'USER_EVENT' // A generic event type for custom user entries
     ]
   },
   entityId: { type: String }, // ID of the course, assignment, etc.
+  title: { type: String }, // For calendar events
+  startTime: { type: Date }, // For calendar events
+  endTime: { type: Date }, // For calendar events
   details: { type: mongoose.Schema.Types.Mixed }, // Flexible field for additional data
   timestamp: { type: Date, default: Date.now }
 });

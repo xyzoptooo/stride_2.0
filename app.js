@@ -18,6 +18,8 @@ import syllabusRoutes from './routes/syllabus.route.js';
 import courseRoutes from './routes/course.route.js';
 import onboardingRoutes from './routes/onboarding.route.js';
 import assignmentRoutes from './routes/assignment.route.js';
+import activityRoutes from './routes/activity.route.js';
+import noteRoutes from './routes/note.route.js';
 // Import other routes...
 
 // Create Express app factory for testing
@@ -129,6 +131,8 @@ function createApp() {
   app.use('/api/courses', courseRoutes);
   app.use('/api/onboarding', onboardingRoutes);
   app.use('/api/assignments', assignmentRoutes);
+  app.use('/api/activities', activityRoutes);
+  app.use('/api/notes', noteRoutes);
   // Mount other routes...
 
   // Handle 404 errors
