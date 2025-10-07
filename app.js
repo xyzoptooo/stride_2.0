@@ -20,6 +20,7 @@ import onboardingRoutes from './routes/onboarding.route.js';
 import assignmentRoutes from './routes/assignment.route.js';
 import activityRoutes from './routes/activity.route.js';
 import noteRoutes from './routes/note.route.js';
+import reminderRoutes from './routes/reminder.route.js';
 // Import other routes...
 
 // Create Express app factory for testing
@@ -133,6 +134,7 @@ function createApp() {
   app.use('/api/assignments', assignmentRoutes);
   app.use('/api/activities', activityRoutes);
   app.use('/api/notes', noteRoutes);
+  app.use('/api/reminders', reminderRoutes);
   // Mount other routes...
 
   // Handle 404 errors
@@ -158,6 +160,18 @@ async function startServer() {
   initWorker()
     .then(() => console.log('Tesseract worker initialized'))
     .catch((err) => console.warn('Tesseract pre-warm failed', err?.stack || err?.message || err));
+
+  if (!env.SMART_REMINDERS_DISABLED) {
+    try {
+      const { runReminderScheduler } = await import('./services/reminderScheduler.js');
+      await runReminderScheduler();
+      console.log('Reminder scheduler initialized');
+    } catch (error) {
+      console.error('Failed to initialize reminder scheduler', error?.message || error);
+    }
+  } else {
+    console.warn('SMART_REMINDERS_DISABLED is true; scheduler not started.');
+  }
 
   // Start server
   const port = env.port;

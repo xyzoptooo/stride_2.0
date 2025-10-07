@@ -50,7 +50,10 @@ if (isProduction) {
     'SESSION_SECRET',
     'EMAIL_PASSWORD',
     'COOKIE_SECURE',
-    'EMAIL_SECURE'
+    'EMAIL_SECURE',
+    'REMINDER_ENCRYPTION_KEY',
+    'WEB_PUSH_VAPID_PUBLIC_KEY',
+    'WEB_PUSH_VAPID_PRIVATE_KEY'
   );
 }
 
@@ -108,5 +111,10 @@ export const env = {
     'http://localhost:3000',
     'https://semester-stride-planner.vercel.app',
     'https://semester-stride-planner-git-main-eva254-ke.vercel.app'
-  ]
+  ],
+  REMINDER_ENCRYPTION_KEY: process.env.REMINDER_ENCRYPTION_KEY || null,
+  WEB_PUSH_VAPID_PUBLIC_KEY: process.env.WEB_PUSH_VAPID_PUBLIC_KEY || null,
+  WEB_PUSH_VAPID_PRIVATE_KEY: process.env.WEB_PUSH_VAPID_PRIVATE_KEY || null,
+  REMINDER_MAX_BATCH_SIZE: parseInt(process.env.REMINDER_MAX_BATCH_SIZE || '100', 10),
+  SMART_REMINDERS_DISABLED: process.env.SMART_REMINDERS_DISABLED === 'true'
 };
