@@ -15,7 +15,8 @@
     "build": "cross-env NODE_ENV=production npm install --production",
     "build:dev": "cross-env NODE_ENV=development npm install",
     "security-check": "npm audit",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package",
+    "generate:reminder-keys": "node ./scripts/generate-reminder-keys.js"
   },
   "dependencies": {
     "@huggingface/inference": "^4.10.0",

@@ -27,6 +27,20 @@ Notes
 - These defaults are conservative for a small single-instance deployment. For real-user scale, consider moving heavy tasks to an async queue (Redis + workers) and using a distributed rate limiter.
 - Do not commit secrets to the repository. Use your hosting provider's secret manager.
 
+Smart reminders & push notifications
+
+- `REMINDER_ENCRYPTION_KEY` – 32-byte base64 string used to encrypt reminder metadata at rest. Required in production.
+- `WEB_PUSH_VAPID_PUBLIC_KEY` / `WEB_PUSH_VAPID_PRIVATE_KEY` – VAPID key pair used for web push subscriptions. Required in production when smart reminders are enabled.
+- `SMART_REMINDERS_DISABLED` – set to `true` to temporarily disable reminder scheduling and push notifications (not recommended for long term).
+
+Generate new keys locally by running:
+
+```
+npm run generate:reminder-keys
+```
+
+The script will print all three values; copy them into your hosting provider's environment settings (e.g., Render → Environment → Environment Variables) before deploying.
+
 Onboarding draft flow
 
 - The onboarding import endpoint supports anonymous preview uploads when `ALLOW_ANON_ONBOARDING` is true (default). When a user uploads before logging in, the server returns parsed data but does not persist it. The frontend saves this as `onboarding_draft` in localStorage.
