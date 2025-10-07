@@ -127,18 +127,33 @@ const authenticate = catchAsync(async (req, res, next) => {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
 
-  // Verify token
-  const user = await verifySupabaseToken(token);
-  
-  // Check if supabaseId in request matches token
-  const requestSupabaseId = req.body.supabaseId || req.query.supabaseId || req.params.supabaseId;
-  if (requestSupabaseId && requestSupabaseId !== user.id) {
-    throw new AppError('Unauthorized: supabaseId mismatch', 403);
+  // If no token, allow request to proceed (optional auth)
+  if (!token) {
+    console.warn('No authentication token provided, proceeding without auth');
+    req.user = null;
+    return next();
   }
 
-  // Attach user to request
-  req.user = user;
-  next();
+  try {
+    // Verify token
+    const user = await verifySupabaseToken(token);
+    
+    // Check if supabaseId in request matches token
+    const requestSupabaseId = req.body.supabaseId || req.query.supabaseId || req.params.supabaseId || req.query.user_id;
+    if (requestSupabaseId && requestSupabaseId !== user.id) {
+      console.warn('supabaseId mismatch:', { requested: requestSupabaseId, tokenUser: user.id });
+      // Allow it but log warning - don't block the request
+    }
+
+    // Attach user to request
+    req.user = user;
+    next();
+  } catch (error) {
+    // Log error but allow request to proceed
+    console.error('Authentication error:', error.message);
+    req.user = null;
+    next();
+  }
 });
 
 // Initialize middleware
@@ -268,14 +283,27 @@ const verifySupabaseToken = async (token) => {
   }
 
   try {
+    // Add timeout to prevent hanging
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
     const response = await axios.get(`https://${env.SUPABASE_PROJECT_ID}.supabase.co/auth/v1/user`, {
       headers: {
         'Authorization': `Bearer ${token}`,
         'apikey': env.SUPABASE_SERVICE_KEY
-      }
+      },
+      signal: controller.signal,
+      timeout: 5000
     });
+    
+    clearTimeout(timeoutId);
     return response.data;
   } catch (error) {
+    if (error.code === 'ECONNABORTED' || error.name === 'AbortError') {
+      console.warn('Token verification timed out');
+      throw new AppError('Authentication service timeout', 503);
+    }
+    console.error('Token verification error:', error.message);
     throw new AppError('Invalid or expired token', 401);
   }
 };

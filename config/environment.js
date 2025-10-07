@@ -78,7 +78,9 @@ export const env = {
   port: process.env.PORT || 3000,
   MONGODB_URI: process.env.MONGODB_URI,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-    HF_API_TOKEN: process.env.HF_API_TOKEN || null,
+  HF_API_TOKEN: process.env.HF_API_TOKEN || null,
+  SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY,
+  SUPABASE_PROJECT_ID: process.env.SUPABASE_PROJECT_ID || process.env.SUPABASE_URL?.match(/https:\/\/([^.]+)\.supabase\.co/)?.[1] || '',
   // OCR.space API key (optional). Provide via environment - do NOT commit keys to repo.
   OCR_SPACE_API_KEY: process.env.OCR_SPACE_API_KEY || null,
   sessionSecret: process.env.SESSION_SECRET,
